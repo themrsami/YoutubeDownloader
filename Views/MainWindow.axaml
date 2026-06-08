@@ -1,0 +1,282 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PremiumYoutubeDownloader.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:controls="clr-namespace:Material.Styles.Controls;assembly=Material.Styles"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        xmlns:asyncImageLoader="clr-namespace:AsyncImageLoader;assembly=AsyncImageLoader.Avalonia"
+        mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="750"
+        Width="1100" Height="750"
+        x:Class="PremiumYoutubeDownloader.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource SystemRegionBrush}"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="Premium Youtube Downloader">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Panel Background="{DynamicResource SystemRegionBrush}">
+        <Grid RowDefinitions="*,Auto">
+            
+            <TabControl Grid.Row="0" Margin="10">
+                <!-- DOWNLOADER TAB -->
+                <TabItem Header="Downloader">
+                    <Grid RowDefinitions="Auto,*" Margin="10">
+                        <!-- Header / Search Bar -->
+                        <controls:Card Grid.Row="0" Padding="15" Margin="0,0,0,20" CornerRadius="12">
+                            <Grid ColumnDefinitions="*,Auto">
+                                <TextBox Grid.Column="0" 
+                                         Text="{Binding SearchQuery}" 
+                                         PlaceholderText="Paste YouTube URL or type a search query here..." 
+                                         FontSize="16" 
+                                         Margin="0,0,10,0" 
+                                         VerticalAlignment="Center">
+                                    <TextBox.KeyBindings>
+                                        <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
+                                    </TextBox.KeyBindings>
+                                </TextBox>
+                                <Button Grid.Column="1" 
+                                        Command="{Binding SearchCommand}" 
+                                        Classes="Primary" 
+                                        Width="120" Height="40">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <materialIcons:MaterialIcon Kind="Search" />
+                                        <TextBlock Text="Search" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </controls:Card>
+
+                        <!-- Main Content Area -->
+                        <Grid Grid.Row="1" ColumnDefinitions="350,*">
+                            
+                            <!-- Playlist/Search Sidebar -->
+                            <controls:Card Grid.Column="0" Margin="0,0,20,0" CornerRadius="16" Background="{DynamicResource MaterialDesignCardBackground}" IsVisible="{Binding IsPlaylistLoaded}">
+                                <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
+                                    <TextBlock Grid.Row="0" Text="Batch Selection" FontSize="18" FontWeight="Bold" Margin="15,15,15,5"/>
+                                    
+                                    <TextBox Grid.Row="1" Text="{Binding PlaylistSearchQuery}" PlaceholderText="Filter by video title..." Margin="15,5,15,10"/>
+                                    
+                                    <ComboBox Grid.Row="2" ItemsSource="{Binding GlobalQualities}" 
+                                              SelectedItem="{Binding SelectedGlobalQuality}" 
+                                              HorizontalAlignment="Stretch" Margin="15,0,15,10"/>
+
+                                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="15,5,15,10">
+                                        <CheckBox IsChecked="{Binding IsAllSelected}" Content="Select All Filtered Videos" />
+                                    </StackPanel>
+
+                                    <ListBox Grid.Row="4" ItemsSource="{Binding FilteredVideos}" SelectedItem="{Binding SelectedVideo}" Background="Transparent">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <CheckBox IsChecked="{Binding IsSelected}" />
+                                                    <TextBlock Text="{Binding Video.Title}" TextWrapping="Wrap" MaxLines="2" VerticalAlignment="Center" Width="250" ToolTip.Tip="{Binding Video.Title}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </controls:Card>
+
+                            <!-- Video Details -->
+                            <controls:Card Grid.Column="1" 
+                                           IsVisible="{Binding IsVideoLoaded}" 
+                                           Padding="20" CornerRadius="16" 
+                                           Background="{DynamicResource MaterialDesignCardBackground}">
+                                <Grid ColumnDefinitions="300,*" RowDefinitions="*,Auto">
+                                    <!-- Thumbnail -->
+                                    <Border Grid.Column="0" CornerRadius="12" ClipToBounds="True" Background="#2C2C2C" VerticalAlignment="Top" Width="300" Height="168">
+                                        <Image asyncImageLoader:ImageLoader.Source="{Binding ThumbnailUrl}" Stretch="UniformToFill"/>
+                                    </Border>
+                                    
+                                    <!-- Info -->
+                                    <StackPanel Grid.Column="1" Margin="20,0,0,0" Spacing="10">
+                                        <TextBlock Text="{Binding VideoTitle}" FontSize="22" FontWeight="Bold" TextWrapping="Wrap"/>
+                                        <StackPanel Orientation="Horizontal" Spacing="10">
+                                            <materialIcons:MaterialIcon Kind="AccountCircle" Foreground="Gray"/>
+                                            <TextBlock Text="{Binding VideoAuthor}" FontSize="16" Foreground="Gray" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="10">
+                                            <materialIcons:MaterialIcon Kind="ClockTimeFourOutline" Foreground="Gray"/>
+                                            <TextBlock Text="{Binding VideoDuration}" FontSize="16" Foreground="Gray" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        
+                                        <Border Height="1" Background="#333333" Margin="0,15"/>
+
+                                        <TextBlock Text="Single Video Quality Override" FontSize="16" FontWeight="SemiBold"/>
+                                        
+                                        <ComboBox ItemsSource="{Binding AvailableQualities}" 
+                                                  SelectedItem="{Binding SelectedQuality}" 
+                                                  IsEnabled="{Binding !IsLoadingQualities}"
+                                                  HorizontalAlignment="Stretch" 
+                                                  Margin="0,10,0,0" 
+                                                  PlaceholderText="{Binding QualitiesPlaceholder}" />
+                                    </StackPanel>
+
+                                    <!-- Download Button -->
+                                    <Button Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" 
+                                            Margin="0,20,0,0"
+                                            Command="{Binding DownloadSelectedCommand}" 
+                                            Classes="Accent" Height="50" FontSize="18"
+                                            HorizontalAlignment="Stretch">
+                                        <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
+                                            <materialIcons:MaterialIcon Kind="Download" Width="24" Height="24"/>
+                                            <TextBlock Text="Add Selected To Queue" VerticalAlignment="Center" FontWeight="Bold"/>
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </controls:Card>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+
+                <!-- QUEUE TAB -->
+                <TabItem Header="{Binding QueueTabHeader}">
+                    <Grid RowDefinitions="Auto,*" Margin="10">
+                        <TextBlock Grid.Row="0" Text="Download Queue" FontSize="24" FontWeight="Bold" Margin="0,0,0,20"/>
+                        <ScrollViewer Grid.Row="1">
+                            <ItemsControl ItemsSource="{Binding DownloadQueue}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <controls:Card Margin="0,0,0,10" Padding="15" CornerRadius="8">
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <StackPanel Grid.Column="0" Spacing="5">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" FontSize="16" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding Status}" Foreground="Gray" FontSize="14" />
+                                                    <ProgressBar Value="{Binding Progress}" Maximum="100" Height="5" Margin="0,5,20,0" IsVisible="{Binding !IsCompleted}"/>
+                                                </StackPanel>
+                                                
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                                    <Button Content="Open Folder" Command="{Binding OpenFolderCommand}" Classes="Outline" IsVisible="{Binding IsCompleted}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </controls:Card>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+
+                <!-- SETTINGS TAB -->
+                <TabItem Header="Settings">
+                    <ScrollViewer>
+                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,*" Margin="20" HorizontalAlignment="Stretch">
+                            
+                            <TextBlock Grid.Row="0" Text="Application Settings" FontSize="26" FontWeight="Bold" Margin="0,0,0,30"/>
+                            
+                            <!-- General Settings -->
+                            <controls:Card Grid.Row="1" Padding="20" CornerRadius="12" Margin="0,0,0,20">
+                                <StackPanel Spacing="15">
+                                    <TextBlock Text="General Theme" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryHueMidBrush}"/>
+                                    <Border Height="1" Background="{DynamicResource MaterialDesignDivider}" />
+                                    
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Text="Theme Mode" VerticalAlignment="Center" FontSize="16"/>
+                                        <ComboBox Grid.Column="1" ItemsSource="{Binding ThemeModes}" SelectedItem="{Binding AppSettings.ThemeMode}" Width="150"/>
+                                    </Grid>
+                                </StackPanel>
+                            </controls:Card>
+
+                            <!-- Download Preferences -->
+                            <controls:Card Grid.Row="2" Padding="20" CornerRadius="12" Margin="0,0,0,20">
+                                <StackPanel Spacing="15">
+                                    <TextBlock Text="Download Preferences" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryHueMidBrush}"/>
+                                    <Border Height="1" Background="{DynamicResource MaterialDesignDivider}" />
+                                    
+                                    <StackPanel Spacing="5">
+                                        <TextBlock Text="Default Download Path" VerticalAlignment="Center" FontSize="16"/>
+                                        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,0">
+                                            <TextBox Grid.Column="0" Text="{Binding AppSettings.DownloadPath}" Margin="0,0,10,0"/>
+                                            <Button Grid.Column="1" Content="Browse" Command="{Binding SelectDownloadFolderCommand}" Classes="Outline"/>
+                                        </Grid>
+                                    </StackPanel>
+                                    
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,10,0,0">
+                                        <TextBlock Text="Concurrent Downloads Limit" VerticalAlignment="Center" FontSize="16"/>
+                                        <TextBox Grid.Column="1" Text="{Binding AppSettings.ConcurrentDownloads}" Width="80" HorizontalAlignment="Right"/>
+                                    </Grid>
+                                </StackPanel>
+                            </controls:Card>
+                            
+                            <!-- Advanced Integrations -->
+                            <controls:Card Grid.Row="3" Padding="20" CornerRadius="12" Margin="0,0,0,30">
+                                <StackPanel Spacing="15">
+                                    <TextBlock Text="Advanced Integrations" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryHueMidBrush}"/>
+                                    <Border Height="1" Background="{DynamicResource MaterialDesignDivider}" />
+                                    
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <StackPanel>
+                                            <TextBlock Text="ID3 Media Tagging (Audio Only)" FontSize="16" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Embeds thumbnails as cover art and sets Title/Artist metadata." FontSize="13" Foreground="Gray"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1" IsChecked="{Binding AppSettings.AutoTagAudio}" />
+                                    </Grid>
+
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,10,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Auto-Download Subtitles" FontSize="16" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Saves available closed captions as a .vtt file alongside the video." FontSize="13" Foreground="Gray"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1" IsChecked="{Binding AppSettings.DownloadSubtitles}" />
+                                    </Grid>
+
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,10,0,0" IsVisible="{Binding AppSettings.DownloadSubtitles}">
+                                        <StackPanel>
+                                            <TextBlock Text="Embed Subtitles directly into Video" FontSize="16" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Requires FFmpeg. Hard-codes the subtitle into the MP4/MKV container." FontSize="13" Foreground="Gray"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1" IsChecked="{Binding AppSettings.EmbedSubtitles}" />
+                                    </Grid>
+
+                                    <Grid ColumnDefinitions="*,Auto" Margin="0,10,0,0" IsVisible="{Binding AppSettings.DownloadSubtitles}">
+                                        <StackPanel>
+                                            <TextBlock Text="Preferred Subtitle Language" FontSize="16" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Enter the ISO language code (e.g. en, es, fr, auto)" FontSize="13" Foreground="Gray"/>
+                                        </StackPanel>
+                                        <TextBox Grid.Column="1" Text="{Binding AppSettings.SubtitleLanguage}" Width="80" HorizontalAlignment="Right"/>
+                                    </Grid>
+                                </StackPanel>
+                            </controls:Card>
+
+                            <Expander Grid.Row="4" Header="About &amp; Author" IsExpanded="True" Margin="0,0,0,10">
+                                <StackPanel Spacing="10">
+                                    <TextBlock Text="Premium YouTube Downloader v1.0.0" FontWeight="Bold" FontSize="16" />
+                                    <TextBlock Text="Developed by themrsami" Foreground="{DynamicResource MaterialPrimaryMidBrush}" FontSize="14" />
+                                    <TextBlock Text="https://github.com/themrsami/YoutubeDownloader" FontSize="12" Foreground="Gray" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Expander>
+
+                            <Button Grid.Row="5" Content="Save Settings" Command="{Binding SaveSettingsCommand}" Classes="Primary" HorizontalAlignment="Left" Margin="0,10,0,0" Width="300" Height="45" />
+                        </Grid>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
+            
+            <!-- Status Footer -->
+            <Border Grid.Row="1" Background="{DynamicResource MaterialDesignToolBarBackground}" Padding="15,10">
+                <TextBlock Text="{Binding StatusMessage}" FontSize="14" Foreground="Gray" HorizontalAlignment="Left" />
+            </Border>
+        </Grid>
+
+        <!-- GLOBAL LOADING OVERLAY (Centered) -->
+        <Border Background="#99000000" IsVisible="{Binding IsLoading}" ZIndex="100">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="15">
+                <ProgressBar IsIndeterminate="True" Width="200" Height="10"/>
+                <TextBlock Text="{Binding StatusMessage}" FontSize="20" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Initialization Overlay -->
+        <Border IsVisible="{Binding IsInitializing}" Background="#E6000000" ZIndex="200" CornerRadius="0">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="20">
+                <ProgressBar IsIndeterminate="True" Classes="Primary" Width="300" Height="6" />
+                <TextBlock Text="{Binding InitializationMessage}" FontSize="18" FontWeight="Bold" Foreground="White" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="500" />
+            </StackPanel>
+        </Border>
+    </Panel>
+</Window>
