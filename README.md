@@ -30,11 +30,17 @@ Built with performance in mind, this tool bypasses standard API limitations to d
 
 ## 📸 Screenshots
 
-*(Add screenshots of your application here after publishing)*
+<div align="center">
+  <img src="Assets/Screenshots/screenshot_1.png" width="48%" />
+  <img src="Assets/Screenshots/screenshot_2.png" width="48%" />
+  <br/>
+  <img src="Assets/Screenshots/screenshot_3.png" width="48%" />
+  <img src="Assets/Screenshots/screenshot_4.png" width="48%" />
+</div>
 
 ## 📥 Installation
 
-Because this is a proprietary, closed-source application, the source code is not publicly available. You can download the pre-compiled, self-contained Windows executable directly from the Releases page!
+You can download the pre-compiled, self-contained Windows portable executable directly from the Releases page, or clone the repository to build from source!
 
 1. Go to the [Releases Tab](../../releases/latest).
 2. Download the latest `PremiumYoutubeDownloader.exe`.
