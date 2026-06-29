@@ -9,6 +9,13 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+        {
+            if (DataContext is MainWindowViewModel vm)
+            {
+                vm.SelectedSection = "Downloader";
+            }
+        };
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DropEvent, DropHandler);
     }

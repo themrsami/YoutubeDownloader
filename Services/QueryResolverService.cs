@@ -16,7 +16,7 @@ public class QueryResolverService
 
     public QueryResolverService()
     {
-        _youtube = new YoutubeClient();
+        _youtube = new YoutubeClient(YoutubeHttpClientFactory.Create());
     }
 
     public async Task<QueryResult> ResolveAsync(string query)

@@ -40,11 +40,27 @@ Built with performance in mind, this tool bypasses standard API limitations to d
 
 ## 📥 Installation
 
-You can download the pre-compiled, self-contained Windows portable executable directly from the Releases page, or clone the repository to build from source!
+You can download the pre-compiled, self-contained Windows portable executable directly from the Releases page, or clone the repository to build from source.
 
 1. Go to the [Releases Tab](../../releases/latest).
 2. Download the latest `PremiumYoutubeDownloader.exe`.
 3. Double-click to run! (No installation required—it's a portable executable).
+
+### macOS
+
+Build a self-contained macOS app bundle from source:
+
+```bash
+chmod +x build-macos.sh
+./build-macos.sh
+```
+
+On Apple Silicon, the app is created at `artifacts/macos/osx-arm64/Premium YouTube Downloader.app`. On Intel Macs, the default target is `osx-x64`. You can also pass the runtime explicitly:
+
+```bash
+./build-macos.sh osx-arm64
+./build-macos.sh osx-x64
+```
 
 ## 💡 How to Use
 

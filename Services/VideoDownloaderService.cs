@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using YoutubeExplode;
@@ -15,11 +17,13 @@ namespace PremiumYoutubeDownloader.Services;
 
 public class VideoDownloaderService
 {
+    private const int HighQualityMp3Bitrate = 320_000;
+
     private readonly YoutubeClient _youtube;
 
     public VideoDownloaderService()
     {
-        _youtube = new YoutubeClient();
+        _youtube = new YoutubeClient(YoutubeHttpClientFactory.Create());
     }
 
     public async Task<Video> GetVideoDetailsAsync(string url)
@@ -120,8 +124,7 @@ public class VideoDownloaderService
         {
             if (outputFilePath.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
             {
-                var streamInfos = new IStreamInfo[] { option.AudioStream };
-                await _youtube.Videos.DownloadAsync(streamInfos, new ConversionRequestBuilder(outputFilePath).Build(), progress, cancellationToken);
+                await DownloadHighQualityMp3Async(option.AudioStream, outputFilePath, progress, cancellationToken);
             }
             else
             {
@@ -135,6 +138,115 @@ public class VideoDownloaderService
         else if (option.AudioStream != null)
         {
             await _youtube.Videos.Streams.DownloadAsync(option.AudioStream, outputFilePath, progress, cancellationToken);
+        }
+    }
+
+    private async Task DownloadHighQualityMp3Async(
+        IStreamInfo audioStream,
+        string outputFilePath,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var outputDirectory = Path.GetDirectoryName(outputFilePath);
+        if (!string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        var sourceExtension = audioStream.Container.Name;
+        var tempPath = Path.Combine(
+            string.IsNullOrWhiteSpace(outputDirectory) ? Path.GetTempPath() : outputDirectory,
+            $"{Path.GetFileNameWithoutExtension(outputFilePath)}.source.{Guid.NewGuid():N}.{sourceExtension}");
+
+        try
+        {
+            var downloadProgress = progress == null
+                ? null
+                : new Progress<double>(p => progress.Report(Math.Min(p * 0.92, 0.92)));
+
+            await _youtube.Videos.Streams.DownloadAsync(audioStream, tempPath, downloadProgress, cancellationToken);
+
+            var ffmpegPath = await FfmpegBootstrapper.EnsureFfmpegCliPathAsync(null, cancellationToken);
+            await ConvertAudioToHighQualityMp3Async(ffmpegPath, tempPath, outputFilePath, cancellationToken);
+            progress?.Report(1);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static async Task ConvertAudioToHighQualityMp3Async(
+        string ffmpegPath,
+        string inputPath,
+        string outputFilePath,
+        CancellationToken cancellationToken)
+    {
+        var processInfo = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
+
+        processInfo.ArgumentList.Add("-y");
+        processInfo.ArgumentList.Add("-i");
+        processInfo.ArgumentList.Add(inputPath);
+        processInfo.ArgumentList.Add("-vn");
+        processInfo.ArgumentList.Add("-codec:a");
+        processInfo.ArgumentList.Add("libmp3lame");
+        processInfo.ArgumentList.Add("-b:a");
+        processInfo.ArgumentList.Add("320k");
+        processInfo.ArgumentList.Add(outputFilePath);
+
+        using var process = new Process { StartInfo = processInfo };
+        var output = new StringBuilder();
+
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                output.AppendLine(e.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                output.AppendLine(e.Data);
+            }
+        };
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Could not start FFmpeg at '{ffmpegPath}'.");
+        }
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        await process.WaitForExitAsync(cancellationToken);
+
+        if (process.ExitCode != 0)
+        {
+            var details = output.ToString().Trim();
+            if (details.Length > 800)
+            {
+                details = details[^800..];
+            }
+
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(details)
+                ? $"FFmpeg exited with code {process.ExitCode}."
+                : $"FFmpeg exited with code {process.ExitCode}: {details}");
         }
     }
 }
