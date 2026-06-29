@@ -48,6 +48,14 @@ You can download the pre-compiled, self-contained Windows portable executable di
 
 ### macOS
 
+<div align="center">
+  <img src="Assets/Screenshots/macOS/ss1.png" alt="macOS downloader home screen" width="32%" />
+  <img src="Assets/Screenshots/macOS/ss2.png" alt="macOS downloader results screen" width="32%" />
+  <img src="Assets/Screenshots/macOS/ss3.png" alt="macOS downloader queue screen" width="32%" />
+</div>
+
+<br/>
+
 Build a self-contained macOS app bundle from source:
 
 ```bash
