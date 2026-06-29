@@ -4,6 +4,7 @@ using Avalonia.Data.Core;
 using Avalonia.Data.Core.Plugins;
 using System.Linq;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using PremiumYoutubeDownloader.ViewModels;
 using PremiumYoutubeDownloader.Views;
 
@@ -36,6 +37,7 @@ public partial class App : Application
             };
 
             desktop.MainWindow = mainWindow;
+            Dispatcher.UIThread.Post(() => vm.SelectedSection = "Downloader", DispatcherPriority.Loaded);
         }
 
         base.OnFrameworkInitializationCompleted();

@@ -2,8 +2,9 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationManifest Condition="'$(RuntimeIdentifier)' == '' Or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
@@ -25,6 +26,7 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.1" />
     <PackageReference Include="Material.Avalonia" Version="3.17.0" />
     <PackageReference Include="Material.Icons.Avalonia" Version="3.0.2" />
+    <PackageReference Include="SkiaSharp" Version="3.119.4" />
     <PackageReference Include="System.Text.Json" Version="9.0.0" />
     <PackageReference Include="TagLibSharp" Version="2.3.0" />
     <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
