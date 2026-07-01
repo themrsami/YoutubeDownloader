@@ -36,7 +36,7 @@
                     <TextBox Grid.Column="0"
                              Classes="search-field"
                              Text="{Binding SearchQuery}"
-                             PlaceholderText="Paste URL or search YouTube">
+                             PlaceholderText="Paste video, playlist, or channel URL">
                         <TextBox.KeyBindings>
                             <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
                         </TextBox.KeyBindings>
@@ -220,7 +220,7 @@
                                             <StackPanel Spacing="1">
                                                 <TextBlock Text="Results"
                                                            Classes="panel-title" />
-                                                <TextBlock Text="{Binding FilteredVideoCount, StringFormat='{}{0} visible'}"
+                                                <TextBlock Text="{Binding CurrentResultKindLabel, StringFormat='{}{0} results'}"
                                                            Classes="caption" />
                                             </StackPanel>
 
@@ -358,10 +358,13 @@
                                 <Grid Grid.Column="1"
                                       RowDefinitions="*,Auto"
                                       MinWidth="0">
-                                    <Panel Grid.Row="0">
-                                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,*"
-                                              RowSpacing="12"
-                                              IsVisible="{Binding IsVideoLoaded}">
+                                    <ScrollViewer Grid.Row="0"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <Panel>
+                                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,*"
+                                                  RowSpacing="12"
+                                                  IsVisible="{Binding IsVideoLoaded}">
                                             <Border Grid.Row="0"
                                                     Height="178"
                                                     MinHeight="132"
@@ -438,33 +441,154 @@
                                                        TextWrapping="Wrap"
                                                        MaxLines="2" />
 
-                                            <ProgressBar Grid.Row="4"
+                                            <Border Grid.Row="4"
+                                                    Classes="metadata-panel"
+                                                    IsVisible="{Binding IsAudioMetadataEditorVisible}"
+                                                    x:CompileBindings="False">
+                                                <StackPanel Spacing="9">
+                                                    <Grid ColumnDefinitions="*,Auto"
+                                                          ColumnSpacing="10">
+                                                        <StackPanel Spacing="2"
+                                                                    MinWidth="0">
+                                                            <TextBlock Text="Audio metadata"
+                                                                       FontWeight="SemiBold"
+                                                                       FontSize="13" />
+                                                            <TextBlock Text="{Binding SelectedVideo.Metadata.ArtworkSourceSummary}"
+                                                                       Classes="caption"
+                                                                       ToolTip.Tip="{Binding SelectedVideo.Metadata.ArtworkSourceSummary}" />
+                                                        </StackPanel>
+                                                        <Button Grid.Column="1"
+                                                                Classes="toolbar"
+                                                                Command="{Binding ChooseSelectedArtworkCommand}">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="FileImagePlusOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Cover" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </Grid>
+
+                                                    <Border Classes="metadata-group">
+                                                        <StackPanel>
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Title" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.Title}"
+                                                                         PlaceholderText="Add title" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Artist" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.Artist}"
+                                                                         PlaceholderText="Add artist" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Album" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.Album}"
+                                                                         PlaceholderText="Add album" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Album Artist" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.AlbumArtist}"
+                                                                         PlaceholderText="Add album artist" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Genre" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.Genre}"
+                                                                         PlaceholderText="Add genre" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*,*,*" ColumnSpacing="8">
+                                                                <TextBlock Text="Numbers" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field center"
+                                                                         Text="{Binding SelectedVideo.Metadata.Year}"
+                                                                         PlaceholderText="Year" />
+                                                                <TextBox Grid.Column="2"
+                                                                         Classes="metadata-field center"
+                                                                         Text="{Binding SelectedVideo.Metadata.TrackNumber}"
+                                                                         PlaceholderText="Track" />
+                                                                <TextBox Grid.Column="3"
+                                                                         Classes="metadata-field center"
+                                                                         Text="{Binding SelectedVideo.Metadata.DiscNumber}"
+                                                                         PlaceholderText="Disc" />
+                                                            </Grid>
+                                                            <Border Classes="metadata-separator" />
+                                                            <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                <TextBlock Text="Comment" Classes="field-label" />
+                                                                <TextBox Grid.Column="1"
+                                                                         Classes="metadata-field"
+                                                                         Text="{Binding SelectedVideo.Metadata.Comment}"
+                                                                         PlaceholderText="Add comment" />
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <Expander Header="Advanced"
+                                                              Classes="metadata-advanced">
+                                                        <Border Classes="metadata-group"
+                                                                Margin="0,6,0,0">
+                                                            <StackPanel>
+                                                                <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                    <TextBlock Text="Source URL" Classes="field-label" />
+                                                                    <TextBox Grid.Column="1"
+                                                                             Classes="metadata-field"
+                                                                             Text="{Binding SelectedVideo.Metadata.SourceUrl}"
+                                                                             PlaceholderText="Add source URL" />
+                                                                </Grid>
+                                                                <Border Classes="metadata-separator" />
+                                                                <Grid Classes="metadata-row" ColumnDefinitions="116,*">
+                                                                    <TextBlock Text="Artwork URL" Classes="field-label" />
+                                                                    <TextBox Grid.Column="1"
+                                                                             Classes="metadata-field"
+                                                                             Text="{Binding SelectedVideo.Metadata.ArtworkUrl}"
+                                                                             PlaceholderText="Add artwork URL" />
+                                                                </Grid>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Expander>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ProgressBar Grid.Row="5"
                                                          IsIndeterminate="True"
                                                          IsVisible="{Binding IsLoadingQualities}"
                                                          VerticalAlignment="Top" />
                                         </Grid>
 
-                                        <Grid IsVisible="{Binding IsVideoEmpty}">
-                                            <StackPanel HorizontalAlignment="Center"
-                                                        VerticalAlignment="Center"
-                                                        Spacing="9"
-                                                        MaxWidth="300">
-                                                <materialIcons:MaterialIcon Kind="MovieOpenOutline"
-                                                                            Width="30"
-                                                                            Height="30"
-                                                                            Foreground="{DynamicResource MacTertiaryTextBrush}"
-                                                                            HorizontalAlignment="Center" />
-                                                <TextBlock Text="Choose a result"
-                                                           FontSize="17"
-                                                           FontWeight="SemiBold"
-                                                           HorizontalAlignment="Center" />
-                                                <TextBlock Text="The selected video preview and format choice appear here."
-                                                           Classes="muted"
-                                                           TextAlignment="Center"
-                                                           TextWrapping="Wrap" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Panel>
+                                            <Grid IsVisible="{Binding IsVideoEmpty}">
+                                                <StackPanel HorizontalAlignment="Center"
+                                                            VerticalAlignment="Center"
+                                                            Spacing="9"
+                                                            MaxWidth="300">
+                                                    <materialIcons:MaterialIcon Kind="MovieOpenOutline"
+                                                                                Width="30"
+                                                                                Height="30"
+                                                                                Foreground="{DynamicResource MacTertiaryTextBrush}"
+                                                                                HorizontalAlignment="Center" />
+                                                    <TextBlock Text="Choose a result"
+                                                               FontSize="17"
+                                                               FontWeight="SemiBold"
+                                                               HorizontalAlignment="Center" />
+                                                    <TextBlock Text="The selected video preview and format choice appear here."
+                                                               Classes="muted"
+                                                               TextAlignment="Center"
+                                                               TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Panel>
+                                    </ScrollViewer>
 
                                     <Grid Grid.Row="1"
                                           Classes="footer-row"
@@ -518,13 +642,46 @@
                                            TextAlignment="Left" />
                             </StackPanel>
 
-                            <Grid Grid.Column="1"
-                                  ColumnDefinitions="Auto,Auto,Auto,Auto,Auto"
-                                  ColumnSpacing="9"
-                                  VerticalAlignment="Center">
+                            <WrapPanel Grid.Column="1"
+                                       Orientation="Horizontal"
+                                       VerticalAlignment="Center">
+                                <Button Classes="compact"
+                                        Command="{Binding PauseAllDownloadsCommand}"
+                                        IsVisible="{Binding HasPausableDownloads}"
+                                        Margin="0,0,7,0"
+                                        VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <materialIcons:MaterialIcon Kind="PauseCircleOutline" Width="15" Height="15" />
+                                        <TextBlock Text="Pause All" />
+                                    </StackPanel>
+                                </Button>
+
+                                <Button Classes="compact"
+                                        Command="{Binding ResumeAllDownloadsCommand}"
+                                        IsVisible="{Binding HasResumableDownloads}"
+                                        Margin="0,0,7,0"
+                                        VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <materialIcons:MaterialIcon Kind="PlayCircleOutline" Width="15" Height="15" />
+                                        <TextBlock Text="Resume All" />
+                                    </StackPanel>
+                                </Button>
+
+                                <Button Classes="compact"
+                                        Command="{Binding CancelAllDownloadsCommand}"
+                                        IsVisible="{Binding HasCancellableDownloads}"
+                                        Margin="0,0,7,0"
+                                        VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <materialIcons:MaterialIcon Kind="CloseCircleOutline" Width="15" Height="15" />
+                                        <TextBlock Text="Cancel All" />
+                                    </StackPanel>
+                                </Button>
+
                                 <Button Classes="compact"
                                         Command="{Binding RetryFailedDownloadsCommand}"
                                         IsVisible="{Binding HasFailedDownloads}"
+                                        Margin="0,0,7,0"
                                         VerticalAlignment="Center">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <materialIcons:MaterialIcon Kind="Refresh" Width="15" Height="15" />
@@ -532,42 +689,41 @@
                                     </StackPanel>
                                 </Button>
 
-                                <Button Grid.Column="1"
-                                        Classes="compact"
+                                <Button Classes="compact"
                                         Command="{Binding ClearFinishedDownloadsCommand}"
                                         IsVisible="{Binding HasFinishedDownloads}"
+                                        Margin="0,0,7,0"
                                         VerticalAlignment="Center">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <materialIcons:MaterialIcon Kind="CheckCircleOutline" Width="15" Height="15" />
-                                        <TextBlock Text="Clear Done/Issues" />
+                                        <TextBlock Text="Clear Finished" />
                                     </StackPanel>
                                 </Button>
 
-                                <Border Grid.Column="2"
-                                        Classes="queue-stat"
+                                <Border Classes="queue-stat"
                                         IsVisible="{Binding HasQueueItems}">
                                     <TextBlock Text="{Binding ActiveDownloadCount, StringFormat='{}{0} active'}"
                                                FontWeight="Medium"
                                                FontSize="13"
                                                VerticalAlignment="Center" />
                                 </Border>
-                                <Border Grid.Column="3"
-                                        Classes="queue-stat"
+                                <Border Classes="queue-stat"
+                                        Margin="7,0,0,0"
                                         IsVisible="{Binding HasQueueItems}">
                                     <TextBlock Text="{Binding CompletedDownloadCount, StringFormat='{}{0} done'}"
                                                FontWeight="Medium"
                                                FontSize="13"
                                                VerticalAlignment="Center" />
                                 </Border>
-                                <Border Grid.Column="4"
-                                        Classes="queue-stat"
+                                <Border Classes="queue-stat"
+                                        Margin="7,0,0,0"
                                         IsVisible="{Binding HasQueueItems}">
                                     <TextBlock Text="{Binding FailedDownloadCount, StringFormat='{}{0} failed'}"
                                                FontWeight="Medium"
                                                FontSize="13"
                                                VerticalAlignment="Center" />
                                 </Border>
-                            </Grid>
+                            </WrapPanel>
                         </Grid>
 
                         <Panel Grid.Row="1">
@@ -624,7 +780,7 @@
                                                     </Border>
 
                                                     <Grid Grid.Column="1"
-                                                          RowDefinitions="Auto,Auto,Auto"
+                                                          RowDefinitions="Auto,Auto,Auto,Auto"
                                                           MinWidth="0">
                                                         <TextBlock Text="{Binding Title}"
                                                                    FontSize="13"
@@ -653,14 +809,131 @@
                                                                      Maximum="100"
                                                                      Margin="0,8,24,0"
                                                                      IsVisible="{Binding IsProgressVisible}" />
+
+                                                        <Expander Grid.Row="3"
+                                                                  Header="Metadata"
+                                                                  IsVisible="{Binding IsAudio}"
+                                                                  Margin="0,7,16,0"
+                                                                  x:CompileBindings="False">
+                                                            <StackPanel Spacing="7"
+                                                                        Margin="0,8,0,0">
+                                                                <Grid ColumnDefinitions="*,Auto"
+                                                                      ColumnSpacing="8">
+                                                                    <TextBlock Text="{Binding Metadata.ArtworkSourceSummary}"
+                                                                               Classes="caption"
+                                                                               VerticalAlignment="Center"
+                                                                               ToolTip.Tip="{Binding Metadata.ArtworkSourceSummary}" />
+                                                                    <Button Grid.Column="1"
+                                                                            Classes="toolbar"
+                                                                            Command="{Binding ChooseArtworkCommand}">
+                                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                            <materialIcons:MaterialIcon Kind="FileImagePlusOutline" Width="14" Height="14" />
+                                                                            <TextBlock Text="Cover" />
+                                                                        </StackPanel>
+                                                                    </Button>
+                                                                </Grid>
+                                                                <Border Classes="metadata-group compact">
+                                                                    <StackPanel>
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Title" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.Title}"
+                                                                                     PlaceholderText="Add title" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Artist" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.Artist}"
+                                                                                     PlaceholderText="Add artist" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Album" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.Album}"
+                                                                                     PlaceholderText="Add album" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Album Artist" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.AlbumArtist}"
+                                                                                     PlaceholderText="Add album artist" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Genre" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.Genre}"
+                                                                                     PlaceholderText="Add genre" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*,*,*" ColumnSpacing="8">
+                                                                            <TextBlock Text="Numbers" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field center"
+                                                                                     Text="{Binding Metadata.Year}"
+                                                                                     PlaceholderText="Year" />
+                                                                            <TextBox Grid.Column="2"
+                                                                                     Classes="metadata-field center"
+                                                                                     Text="{Binding Metadata.TrackNumber}"
+                                                                                     PlaceholderText="Track" />
+                                                                            <TextBox Grid.Column="3"
+                                                                                     Classes="metadata-field center"
+                                                                                     Text="{Binding Metadata.DiscNumber}"
+                                                                                     PlaceholderText="Disc" />
+                                                                        </Grid>
+                                                                        <Border Classes="metadata-separator" />
+                                                                        <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                            <TextBlock Text="Comment" Classes="field-label" />
+                                                                            <TextBox Grid.Column="1"
+                                                                                     Classes="metadata-field"
+                                                                                     Text="{Binding Metadata.Comment}"
+                                                                                     PlaceholderText="Add comment" />
+                                                                        </Grid>
+                                                                    </StackPanel>
+                                                                </Border>
+
+                                                                <Expander Header="Advanced"
+                                                                          Classes="metadata-advanced">
+                                                                    <Border Classes="metadata-group compact"
+                                                                            Margin="0,6,0,0">
+                                                                        <StackPanel>
+                                                                            <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                                <TextBlock Text="Source URL" Classes="field-label" />
+                                                                                <TextBox Grid.Column="1"
+                                                                                         Classes="metadata-field"
+                                                                                         Text="{Binding Metadata.SourceUrl}"
+                                                                                         PlaceholderText="Add source URL" />
+                                                                            </Grid>
+                                                                            <Border Classes="metadata-separator" />
+                                                                            <Grid Classes="metadata-row" ColumnDefinitions="98,*">
+                                                                                <TextBlock Text="Artwork URL" Classes="field-label" />
+                                                                                <TextBox Grid.Column="1"
+                                                                                         Classes="metadata-field"
+                                                                                         Text="{Binding Metadata.ArtworkUrl}"
+                                                                                         PlaceholderText="Add artwork URL" />
+                                                                            </Grid>
+                                                                        </StackPanel>
+                                                                    </Border>
+                                                                </Expander>
+                                                            </StackPanel>
+                                                        </Expander>
                                                     </Grid>
 
-                                                    <StackPanel Grid.Column="2"
-                                                                Orientation="Horizontal"
-                                                                Spacing="7"
-                                                                VerticalAlignment="Center">
+                                                    <WrapPanel Grid.Column="2"
+                                                               Orientation="Horizontal"
+                                                               MaxWidth="360"
+                                                               VerticalAlignment="Center">
                                                         <Border Classes="status-chip success"
-                                                                IsVisible="{Binding IsCompleted}">
+                                                                IsVisible="{Binding IsCompleted}"
+                                                                Margin="0,0,7,7">
                                                             <Grid ColumnDefinitions="Auto,Auto"
                                                                   ColumnSpacing="5"
                                                                   VerticalAlignment="Center">
@@ -678,7 +951,8 @@
                                                         </Border>
 
                                                         <Border Classes="status-chip issue"
-                                                                IsVisible="{Binding HasError}">
+                                                                IsVisible="{Binding HasError}"
+                                                                Margin="0,0,7,7">
                                                             <Grid ColumnDefinitions="Auto,Auto"
                                                                   ColumnSpacing="5"
                                                                   VerticalAlignment="Center">
@@ -692,18 +966,107 @@
                                                                            FontSize="12"
                                                                            FontWeight="SemiBold"
                                                                            VerticalAlignment="Center" />
+                                                           </Grid>
+                                                        </Border>
+
+                                                        <Border Classes="status-chip paused"
+                                                                IsVisible="{Binding IsPaused}"
+                                                                Margin="0,0,7,7">
+                                                            <Grid ColumnDefinitions="Auto,Auto"
+                                                                  ColumnSpacing="5"
+                                                                  VerticalAlignment="Center">
+                                                                <materialIcons:MaterialIcon Kind="PauseCircle"
+                                                                                            Width="14"
+                                                                                            Height="14"
+                                                                                            Foreground="{DynamicResource MacWarningBrush}"
+                                                                                            VerticalAlignment="Center" />
+                                                                <TextBlock Grid.Column="1"
+                                                                           Text="Paused"
+                                                                           FontSize="12"
+                                                                           FontWeight="SemiBold"
+                                                                           VerticalAlignment="Center" />
                                                             </Grid>
                                                         </Border>
 
-                                                        <Button Classes="compact"
+                                                        <Border Classes="status-chip issue"
+                                                                IsVisible="{Binding IsCanceled}"
+                                                                Margin="0,0,7,7">
+                                                            <Grid ColumnDefinitions="Auto,Auto"
+                                                                  ColumnSpacing="5"
+                                                                  VerticalAlignment="Center">
+                                                                <materialIcons:MaterialIcon Kind="CloseCircle"
+                                                                                            Width="14"
+                                                                                            Height="14"
+                                                                                            Foreground="{DynamicResource DangerBrush}"
+                                                                                            VerticalAlignment="Center" />
+                                                                <TextBlock Grid.Column="1"
+                                                                           Text="Canceled"
+                                                                           FontSize="12"
+                                                                           FontWeight="SemiBold"
+                                                                           VerticalAlignment="Center" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <Button Classes="toolbar"
+                                                                Command="{Binding PauseCommand}"
+                                                                IsVisible="{Binding CanPause}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="PauseCircleOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Pause" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
+                                                                Command="{Binding ResumeCommand}"
+                                                                IsVisible="{Binding CanResume}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="PlayCircleOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Resume" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
+                                                                Command="{Binding CancelCommand}"
+                                                                IsVisible="{Binding CanCancel}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="CloseCircleOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Cancel" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
+                                                                Command="{Binding RetryCommand}"
+                                                                IsVisible="{Binding CanRetry}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="Refresh" Width="14" Height="14" />
+                                                                <TextBlock Text="Retry" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
+                                                                Command="{Binding RemoveCommand}"
+                                                                IsVisible="{Binding CanRemove}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="TrashCanOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Remove" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
                                                                 Command="{Binding OpenFolderCommand}"
-                                                                IsVisible="{Binding IsCompleted}">
-                                                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                                                <materialIcons:MaterialIcon Kind="FolderOpenOutline" Width="15" Height="15" />
+                                                                IsVisible="{Binding CanReveal}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="FolderOpenOutline" Width="14" Height="14" />
                                                                 <TextBlock Text="Reveal" />
                                                             </StackPanel>
                                                         </Button>
-                                                    </StackPanel>
+                                                    </WrapPanel>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>

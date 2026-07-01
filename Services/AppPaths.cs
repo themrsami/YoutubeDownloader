@@ -44,6 +44,8 @@ public static class AppPaths
 
     public static string SettingsFile => Path.Combine(GetSettingsDirectory(), "settings.json");
 
+    public static string QueueStateFile => Path.Combine(GetSettingsDirectory(), "download-queue.json");
+
     public static string FfmpegDirectory => OperatingSystem.IsWindows()
         ? AppContext.BaseDirectory
         : Path.Combine(UserDataDirectory, "ffmpeg");

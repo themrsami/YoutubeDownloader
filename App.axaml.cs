@@ -36,6 +36,28 @@ public partial class App : Application
                 return folders.Count > 0 ? folders[0].Path.LocalPath : null;
             };
 
+            vm.SelectArtworkFileAction = async () =>
+            {
+                var topLevel = Avalonia.Controls.TopLevel.GetTopLevel(mainWindow);
+                if (topLevel == null) return null;
+
+                var imageType = new Avalonia.Platform.Storage.FilePickerFileType("Images")
+                {
+                    Patterns = new[] { "*.jpg", "*.jpeg", "*.png", "*.webp" },
+                    MimeTypes = new[] { "image/jpeg", "image/png", "image/webp" },
+                    AppleUniformTypeIdentifiers = new[] { "public.jpeg", "public.png", "org.webmproject.webp" }
+                };
+
+                var files = await topLevel.StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
+                {
+                    Title = "Select Cover Artwork",
+                    AllowMultiple = false,
+                    FileTypeFilter = new[] { imageType }
+                });
+
+                return files.Count > 0 ? files[0].Path.LocalPath : null;
+            };
+
             desktop.MainWindow = mainWindow;
             Dispatcher.UIThread.Post(() => vm.SelectedSection = "Downloader", DispatcherPriority.Loaded);
         }

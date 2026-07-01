@@ -170,6 +170,87 @@
         <Setter Property="BorderBrush" Value="#44FF453A" />
     </Style>
 
+    <Style Selector="Border.status-chip.paused">
+        <Setter Property="Background" Value="#18FF9F0A" />
+        <Setter Property="BorderBrush" Value="#44FF9F0A" />
+    </Style>
+
+    <Style Selector="Border.metadata-panel">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="Padding" Value="0" />
+    </Style>
+
+    <Style Selector="Border.metadata-group">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="Padding" Value="0" />
+    </Style>
+
+    <Style Selector="Border.metadata-group.compact">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <Style Selector="Grid.metadata-row">
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="ColumnSpacing" Value="10" />
+        <Setter Property="Margin" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style Selector="Border.metadata-separator">
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Background" Value="{DynamicResource MacSeparatorBrush}" />
+        <Setter Property="Margin" Value="126,0,0,0" />
+    </Style>
+
+    <Style Selector="Border.metadata-group.compact Border.metadata-separator">
+        <Setter Property="Margin" Value="108,0,0,0" />
+    </Style>
+
+    <Style Selector="TextBlock.field-label">
+        <Setter Property="Foreground" Value="{DynamicResource MacSecondaryTextBrush}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <Style Selector="TextBox.metadata-field">
+        <Setter Property="Height" Value="32" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="MaxHeight" Value="32" />
+        <Setter Property="Padding" Value="0,4" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+
+    <Style Selector="TextBox.metadata-field:pointerover">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <Style Selector="TextBox.metadata-field:focus">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+
+    <Style Selector="TextBox.metadata-field.center">
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+
+    <Style Selector="Expander.metadata-advanced">
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
     <Style Selector="Border.modal-panel">
         <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource MacHairlineBrush}" />

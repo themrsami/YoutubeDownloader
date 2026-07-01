@@ -1,8 +1,10 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using PremiumYoutubeDownloader.Models;
 using SkiaSharp;
 
 namespace PremiumYoutubeDownloader.Services;
@@ -17,10 +19,7 @@ public sealed class AudioMetadataService
 
     public async Task ApplyYoutubeAudioMetadataAsync(
         string mp3Path,
-        string title,
-        string artist,
-        string? thumbnailUrl,
-        string? sourceUrl,
+        AudioMetadata metadata,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(mp3Path) || !File.Exists(mp3Path))
@@ -28,8 +27,12 @@ public sealed class AudioMetadataService
             return;
         }
 
-        var coverArtBytes = !string.IsNullOrWhiteSpace(thumbnailUrl)
-            ? await TryCreateCompatibleCoverArtAsync(thumbnailUrl, cancellationToken)
+        var artworkSource = !string.IsNullOrWhiteSpace(metadata.ArtworkFilePath)
+            ? metadata.ArtworkFilePath
+            : metadata.ArtworkUrl;
+
+        var coverArtBytes = !string.IsNullOrWhiteSpace(artworkSource)
+            ? await TryCreateCompatibleCoverArtAsync(artworkSource, cancellationToken)
             : null;
 
         await Task.Run(() =>
@@ -50,10 +53,18 @@ public sealed class AudioMetadataService
                 file.RemoveTags(TagLib.TagTypes.AllTags);
 
                 var tag = file.GetTag(TagLib.TagTypes.Id3v2, true);
-                tag.Title = CleanTagValue(title);
-                tag.Performers = new[] { CleanTagValue(artist) };
-                tag.AlbumArtists = new[] { CleanTagValue(artist) };
-                tag.Comment = string.IsNullOrWhiteSpace(sourceUrl) ? null : $"Source: {sourceUrl}";
+                var performers = SplitTagList(metadata.Artist);
+                tag.Title = CleanRequiredTagValue(metadata.Title);
+                tag.Performers = performers.Length > 0
+                    ? performers
+                    : new[] { "Unknown" };
+                tag.Album = CleanOptionalTagValue(metadata.Album);
+                tag.AlbumArtists = SplitTagList(metadata.AlbumArtist).DefaultIfEmpty(tag.Performers[0]).ToArray();
+                tag.Genres = SplitTagList(metadata.Genre);
+                tag.Year = ParsePositiveUInt(metadata.Year);
+                tag.Track = ParsePositiveUInt(metadata.TrackNumber);
+                tag.Disc = ParsePositiveUInt(metadata.DiscNumber);
+                tag.Comment = BuildComment(metadata);
 
                 if (coverArtBytes is { Length: > 0 })
                 {
@@ -82,11 +93,38 @@ public sealed class AudioMetadataService
         VerifySavedMetadata(mp3Path, coverArtBytes != null);
     }
 
-    private static async Task<byte[]?> TryCreateCompatibleCoverArtAsync(string thumbnailUrl, CancellationToken cancellationToken)
+    public Task ApplyYoutubeAudioMetadataAsync(
+        string mp3Path,
+        string title,
+        string artist,
+        string? thumbnailUrl,
+        string? sourceUrl,
+        CancellationToken cancellationToken = default)
+    {
+        return ApplyYoutubeAudioMetadataAsync(
+            mp3Path,
+            new AudioMetadata
+            {
+                Title = title,
+                Artist = artist,
+                AlbumArtist = artist,
+                SourceUrl = sourceUrl ?? string.Empty,
+                ArtworkUrl = thumbnailUrl ?? string.Empty
+            },
+            cancellationToken);
+    }
+
+    private static async Task<byte[]?> TryCreateCompatibleCoverArtAsync(string artworkSource, CancellationToken cancellationToken)
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, thumbnailUrl);
+            if (File.Exists(artworkSource))
+            {
+                var localBytes = await File.ReadAllBytesAsync(artworkSource, cancellationToken);
+                return CreateSquareJpegCover(localBytes);
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, artworkSource);
             request.Headers.UserAgent.ParseAdd("PremiumYoutubeDownloader/1.0");
 
             var response = await HttpClient.SendAsync(request, cancellationToken);
@@ -166,9 +204,44 @@ public sealed class AudioMetadataService
         return SKRect.Create(left, top, width, height);
     }
 
-    private static string CleanTagValue(string value)
+    private static string CleanRequiredTagValue(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Trim();
+    }
+
+    private static string? CleanOptionalTagValue(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string[] SplitTagList(string value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? Array.Empty<string>()
+            : value
+                .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .ToArray();
+    }
+
+    private static uint ParsePositiveUInt(string value)
+    {
+        return uint.TryParse(value?.Trim(), out var parsed) ? parsed : 0;
+    }
+
+    private static string? BuildComment(AudioMetadata metadata)
+    {
+        var comment = CleanOptionalTagValue(metadata.Comment);
+        var sourceUrl = CleanOptionalTagValue(metadata.SourceUrl);
+
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return comment;
+        }
+
+        return string.IsNullOrWhiteSpace(comment)
+            ? $"Source: {sourceUrl}"
+            : $"{comment}{Environment.NewLine}Source: {sourceUrl}";
     }
 
     private static void VerifySavedMetadata(string mp3Path, bool expectedCoverArt)
