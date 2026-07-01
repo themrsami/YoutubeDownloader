@@ -8,6 +8,7 @@ using System.IO;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Net.Http;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PremiumYoutubeDownloader.Models;
@@ -52,6 +53,7 @@ public partial class MainWindowViewModel : ViewModelBase
             RaiseSelectionStateChanged();
         };
         DownloadQueue.CollectionChanged += OnDownloadQueueChanged;
+        LoadPersistedQueue();
         Dispatcher.UIThread.Post(() => ApplyTheme(AppSettings.ThemeMode), Avalonia.Threading.DispatcherPriority.Loaded);
         
         _ = InitializeAppAsync();
@@ -146,17 +148,24 @@ public partial class MainWindowViewModel : ViewModelBase
     public bool IsVideoEmpty => HasSearched && HasResults && !IsVideoLoaded && !IsLoading;
 
     public int QueueItemCount => DownloadQueue.Count;
-    public int ActiveDownloadCount => DownloadQueue.Count(q => !q.IsCompleted && !q.HasError);
+    public int ActiveDownloadCount => DownloadQueue.Count(q => q.State is DownloadTaskState.Pending or DownloadTaskState.Running);
+    public int RunningDownloadCount => DownloadQueue.Count(q => q.State == DownloadTaskState.Running);
+    public int PausedDownloadCount => DownloadQueue.Count(q => q.State == DownloadTaskState.Paused);
     public int CompletedDownloadCount => DownloadQueue.Count(q => q.IsCompleted);
     public int FailedDownloadCount => DownloadQueue.Count(q => q.HasError);
+    public int CanceledDownloadCount => DownloadQueue.Count(q => q.State == DownloadTaskState.Canceled);
     public bool HasQueueItems => DownloadQueue.Count > 0;
     public bool HasActiveDownloads => ActiveDownloadCount > 0;
-    public bool HasFinishedDownloads => CompletedDownloadCount > 0 || FailedDownloadCount > 0;
+    public bool HasPausedDownloads => PausedDownloadCount > 0;
+    public bool HasPausableDownloads => DownloadQueue.Any(q => q.CanPause);
+    public bool HasResumableDownloads => DownloadQueue.Any(q => q.CanResume);
+    public bool HasCancellableDownloads => DownloadQueue.Any(q => q.CanCancel);
+    public bool HasFinishedDownloads => CompletedDownloadCount > 0 || FailedDownloadCount > 0 || CanceledDownloadCount > 0;
     public bool HasFailedDownloads => FailedDownloadCount > 0;
     public string QueueBadgeText => ActiveDownloadCount > 0 ? ActiveDownloadCount.ToString() : DownloadQueue.Count.ToString();
     public string QueueSummary => DownloadQueue.Count == 0
         ? "No downloads queued"
-        : $"{ActiveDownloadCount} active, {CompletedDownloadCount} completed, {FailedDownloadCount} failed";
+        : $"{RunningDownloadCount} running, {ActiveDownloadCount} queued/active, {PausedDownloadCount} paused, {CompletedDownloadCount} done, {FailedDownloadCount} failed";
 
     public string ThemeToggleLabel => "Light";
 
@@ -181,7 +190,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void UpdateQueueHeader()
     {
-        var activeCount = DownloadQueue.Count(q => !q.IsCompleted && !q.HasError);
+        var activeCount = DownloadQueue.Count(q => q.State is DownloadTaskState.Pending or DownloadTaskState.Running);
         QueueTabHeader = activeCount > 0 ? $"Queue ({activeCount})" : "Queue";
         RaiseQueueStateChanged();
     }
@@ -197,7 +206,13 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(SelectedGlobalQualitySummary));
         OnPropertyChanged(nameof(SelectedGlobalOutputType));
+        OnPropertyChanged(nameof(IsAudioMetadataEditorVisible));
         QualitiesPlaceholder = SelectedGlobalOutputType;
+    }
+
+    partial void OnCurrentResultKindChanged(QueryResultKind value)
+    {
+        OnPropertyChanged(nameof(CurrentResultKindLabel));
     }
 
     [RelayCommand]
@@ -240,6 +255,12 @@ public partial class MainWindowViewModel : ViewModelBase
     private bool _isPlaylistLoaded = false;
 
     [ObservableProperty]
+    private QueryResultKind _currentResultKind = QueryResultKind.Video;
+
+    [ObservableProperty]
+    private string _currentCollectionTitle = string.Empty;
+
+    [ObservableProperty]
     private bool _isLoadingQualities = false;
 
     [ObservableProperty]
@@ -247,6 +268,17 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
+
+    public string CurrentResultKindLabel => CurrentResultKind switch
+    {
+        QueryResultKind.Video => "Video",
+        QueryResultKind.Playlist => "Playlist",
+        QueryResultKind.Channel => "Channel",
+        QueryResultKind.Search => "Search",
+        _ => "Results"
+    };
+
+    public bool IsAudioMetadataEditorVisible => IsVideoLoaded && IsAudioOnlyPreference(SelectedGlobalQuality);
 
     private void RaiseResultStateChanged()
     {
@@ -301,7 +333,7 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             foreach (DownloadTaskViewModel item in e.NewItems)
             {
-                item.PropertyChanged += OnDownloadItemPropertyChanged;
+                AttachQueueItem(item);
             }
         }
 
@@ -314,16 +346,38 @@ public partial class MainWindowViewModel : ViewModelBase
         }
 
         UpdateQueueHeader();
+        ScheduleSaveQueueState();
+    }
+
+    private void AttachQueueItem(DownloadTaskViewModel item)
+    {
+        item.PropertyChanged += OnDownloadItemPropertyChanged;
+        item.PauseRequestedAsync = PauseQueueItemAsync;
+        item.ResumeRequestedAsync = ResumeQueueItemAsync;
+        item.CancelRequestedAsync = CancelQueueItemAsync;
+        item.RetryRequestedAsync = RetryQueueItemAsync;
+        item.RemoveRequestedAsync = RemoveQueueItemAsync;
+        item.ChooseArtworkRequestedAsync = ChooseQueueItemArtworkAsync;
     }
 
     private void OnDownloadItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(DownloadTaskViewModel.IsCompleted)
+        if (e.PropertyName is nameof(DownloadTaskViewModel.State)
+            or nameof(DownloadTaskViewModel.IsCompleted)
             or nameof(DownloadTaskViewModel.HasError)
             or nameof(DownloadTaskViewModel.Progress)
             or nameof(DownloadTaskViewModel.Status))
         {
             RaiseQueueStateChanged();
+        }
+
+        if (e.PropertyName is nameof(DownloadTaskViewModel.State)
+            or nameof(DownloadTaskViewModel.Status)
+            or nameof(DownloadTaskViewModel.Progress)
+            or nameof(DownloadTaskViewModel.FilePath)
+            or nameof(DownloadTaskViewModel.Metadata))
+        {
+            ScheduleSaveQueueState();
         }
     }
 
@@ -331,10 +385,17 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(QueueItemCount));
         OnPropertyChanged(nameof(ActiveDownloadCount));
+        OnPropertyChanged(nameof(RunningDownloadCount));
+        OnPropertyChanged(nameof(PausedDownloadCount));
         OnPropertyChanged(nameof(CompletedDownloadCount));
         OnPropertyChanged(nameof(FailedDownloadCount));
+        OnPropertyChanged(nameof(CanceledDownloadCount));
         OnPropertyChanged(nameof(HasQueueItems));
         OnPropertyChanged(nameof(HasActiveDownloads));
+        OnPropertyChanged(nameof(HasPausedDownloads));
+        OnPropertyChanged(nameof(HasPausableDownloads));
+        OnPropertyChanged(nameof(HasResumableDownloads));
+        OnPropertyChanged(nameof(HasCancellableDownloads));
         OnPropertyChanged(nameof(HasFinishedDownloads));
         OnPropertyChanged(nameof(HasFailedDownloads));
         OnPropertyChanged(nameof(QueueBadgeText));
@@ -350,6 +411,7 @@ public partial class MainWindowViewModel : ViewModelBase
     partial void OnIsVideoLoadedChanged(bool value)
     {
         OnPropertyChanged(nameof(IsVideoEmpty));
+        OnPropertyChanged(nameof(IsAudioMetadataEditorVisible));
     }
 
     partial void OnHasSearchedChanged(bool value)
@@ -384,7 +446,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void RetryFailedDownloads()
+    private async Task RetryFailedDownloads()
     {
         var failedItems = DownloadQueue
             .Where(q => q.HasError && !string.IsNullOrWhiteSpace(q.VideoUrl))
@@ -398,8 +460,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
         foreach (var item in failedItems)
         {
-            item.ResetForRetry();
-            _ = ProcessDownloadAsync(item, item.VideoUrl, item.QualityLabel);
+            await RetryQueueItemAsync(item);
         }
 
         StatusMessage = failedItems.Count == 1
@@ -412,7 +473,7 @@ public partial class MainWindowViewModel : ViewModelBase
     private void ClearFinishedDownloads()
     {
         var finishedItems = DownloadQueue
-            .Where(q => q.IsCompleted || q.HasError)
+            .Where(q => q.IsCompleted || q.HasError || q.State == DownloadTaskState.Canceled)
             .ToList();
 
         foreach (var item in finishedItems)
@@ -431,6 +492,161 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task PauseAllDownloads()
+    {
+        var items = DownloadQueue.Where(q => q.CanPause).ToList();
+        foreach (var item in items)
+        {
+            await PauseQueueItemAsync(item);
+        }
+
+        StatusMessage = items.Count == 0
+            ? "No active downloads to pause."
+            : $"Paused {items.Count} queue item(s). Active items will restart from the beginning when resumed.";
+    }
+
+    [RelayCommand]
+    private async Task ResumeAllDownloads()
+    {
+        var items = DownloadQueue.Where(q => q.CanResume).ToList();
+        foreach (var item in items)
+        {
+            await ResumeQueueItemAsync(item);
+        }
+
+        StatusMessage = items.Count == 0
+            ? "No paused downloads to resume."
+            : $"Resumed {items.Count} queue item(s).";
+    }
+
+    [RelayCommand]
+    private async Task CancelAllDownloads()
+    {
+        var items = DownloadQueue.Where(q => q.CanCancel).ToList();
+        foreach (var item in items)
+        {
+            await CancelQueueItemAsync(item);
+        }
+
+        StatusMessage = items.Count == 0
+            ? "No downloads to cancel."
+            : $"Canceled {items.Count} queue item(s).";
+    }
+
+    private Task PauseQueueItemAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.CanPause)
+        {
+            return Task.CompletedTask;
+        }
+
+        item.RequestPause();
+        if (item.State == DownloadTaskState.Pending)
+        {
+            item.MarkPaused("Paused before starting.");
+        }
+        else
+        {
+            item.MarkPaused("Pausing active download. Resume restarts from the beginning.");
+        }
+
+        StatusMessage = "Paused queue item. Active stream downloads restart from the beginning when resumed.";
+        UpdateQueueHeader();
+        ScheduleSaveQueueState();
+        return Task.CompletedTask;
+    }
+
+    private Task ResumeQueueItemAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.CanResume)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (item.IsProcessing)
+        {
+            StatusMessage = "That item is still pausing. Resume it again in a moment.";
+            return Task.CompletedTask;
+        }
+
+        item.ResetForResume();
+        StatusMessage = "Resumed queue item. It will restart from the beginning.";
+        UpdateQueueHeader();
+        ScheduleSaveQueueState();
+        return StartQueueItemAsync(item);
+    }
+
+    private Task CancelQueueItemAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.CanCancel)
+        {
+            return Task.CompletedTask;
+        }
+
+        item.RequestCancel();
+        item.MarkCanceled();
+        StatusMessage = "Canceled queue item.";
+        UpdateQueueHeader();
+        ScheduleSaveQueueState();
+        return Task.CompletedTask;
+    }
+
+    private Task RetryQueueItemAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.CanRetry)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (item.IsProcessing)
+        {
+            StatusMessage = "That item is still finishing. Retry it again in a moment.";
+            return Task.CompletedTask;
+        }
+
+        item.ResetForRetry();
+        StatusMessage = "Retrying queue item.";
+        UpdateQueueHeader();
+        ScheduleSaveQueueState();
+        return StartQueueItemAsync(item);
+    }
+
+    private Task RemoveQueueItemAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.CanRemove)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (item.State is DownloadTaskState.Pending or DownloadTaskState.Paused)
+        {
+            item.RequestCancel();
+        }
+
+        DownloadQueue.Remove(item);
+        StatusMessage = "Removed queue item.";
+        UpdateQueueHeader();
+        ScheduleSaveQueueState();
+        return Task.CompletedTask;
+    }
+
+    private async Task ChooseQueueItemArtworkAsync(DownloadTaskViewModel item)
+    {
+        if (!DownloadQueue.Contains(item) || !item.IsAudio || SelectArtworkFileAction == null)
+        {
+            return;
+        }
+
+        var path = await SelectArtworkFileAction();
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            item.Metadata.ArtworkFilePath = path;
+            StatusMessage = "Artwork override selected for queued item.";
+            ScheduleSaveQueueState();
+        }
+    }
+
+    [RelayCommand]
     private void ResetDownloaderState()
     {
         if (IsLoading) return;
@@ -444,6 +660,8 @@ public partial class MainWindowViewModel : ViewModelBase
         ClearSelectedVideoDetails();
         AvailableQualities.Clear();
         IsPlaylistLoaded = false;
+        CurrentResultKind = QueryResultKind.Video;
+        CurrentCollectionTitle = string.Empty;
         IsLoadingQualities = false;
         HasSearched = false;
         StatusMessage = "Ready";
@@ -506,6 +724,7 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     public Func<Task<string?>>? SelectDownloadFolderAction { get; set; }
+    public Func<Task<string?>>? SelectArtworkFileAction { get; set; }
 
     [RelayCommand]
     private async Task SelectDownloadFolder()
@@ -518,6 +737,22 @@ public partial class MainWindowViewModel : ViewModelBase
                 AppSettings = CloneSettings(AppSettings, downloadPath: path);
                 StatusMessage = "Download path updated.";
             }
+        }
+    }
+
+    [RelayCommand]
+    private async Task ChooseSelectedArtwork()
+    {
+        if (SelectedVideo == null || SelectArtworkFileAction == null)
+        {
+            return;
+        }
+
+        var path = await SelectArtworkFileAction();
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            SelectedVideo.Metadata.ArtworkFilePath = path;
+            StatusMessage = "Artwork override selected for this item.";
         }
     }
 
@@ -536,22 +771,57 @@ public partial class MainWindowViewModel : ViewModelBase
         PlaylistSearchQuery = string.Empty;
         AvailableQualities.Clear();
         ClearSelectedVideoDetails();
+        CurrentResultKind = QueryResultKind.Video;
+        CurrentCollectionTitle = string.Empty;
         StatusMessage = "Searching YouTube...";
 
         try
         {
-            var result = await _queryResolver.ResolveAsync(SearchQuery);
+            var result = await _queryResolver.ResolveAsync(
+                SearchQuery,
+                async item =>
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        CurrentResultKind = item.Kind;
+                        CurrentCollectionTitle = item.CollectionTitle;
+                        IsPlaylistLoaded = item.Kind is QueryResultKind.Playlist or QueryResultKind.Channel or QueryResultKind.Search;
+                        AddResolvedVideo(item.Video, item.Kind, item.CollectionTitle, item.Index);
+                        if (SelectedVideo == null && FilteredVideos.Any())
+                        {
+                            SelectedVideo = FilteredVideos.First();
+                        }
+
+                        if (Videos.Count == 1)
+                        {
+                            IsLoading = false;
+                        }
+                    });
+                },
+                async message =>
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() => StatusMessage = message);
+                });
+
+            CurrentResultKind = result.Kind;
+            CurrentCollectionTitle = result.Title;
             
-            if (result.IsPlaylist)
+            if (Videos.Count == 0)
             {
+                var index = 0;
                 foreach (var video in result.Videos)
                 {
-                    var vm = new SelectableVideoViewModel(video);
-                    Videos.Add(vm);
-                    FilteredVideos.Add(vm);
+                    index++;
+                    AddResolvedVideo(video, result.Kind, result.Title, index);
                 }
+            }
+
+            if (result.IsCollection)
+            {
                 IsPlaylistLoaded = true;
-                StatusMessage = $"Playlist/Search loaded: {result.Title} ({Videos.Count} videos)";
+                StatusMessage = string.IsNullOrWhiteSpace(result.WarningMessage)
+                    ? $"{CurrentResultKindLabel} loaded: {result.Title} ({Videos.Count} videos)"
+                    : result.WarningMessage;
                 if (FilteredVideos.Any()) SelectedVideo = FilteredVideos.First();
             }
             else
@@ -559,11 +829,15 @@ public partial class MainWindowViewModel : ViewModelBase
                 var video = result.Videos.FirstOrDefault();
                 if (video != null)
                 {
-                    var vm = new SelectableVideoViewModel(video);
-                    Videos.Add(vm);
-                    FilteredVideos.Add(vm);
-                    SelectedVideo = vm;
-                    StatusMessage = "Video details loaded successfully.";
+                    if (Videos.Count == 0)
+                    {
+                        AddResolvedVideo(video, QueryResultKind.Video, string.Empty, 1);
+                    }
+
+                    SelectedVideo = FilteredVideos.FirstOrDefault();
+                    StatusMessage = string.IsNullOrWhiteSpace(result.WarningMessage)
+                        ? "Video loaded successfully."
+                        : result.WarningMessage;
                 }
             }
 
@@ -580,6 +854,18 @@ public partial class MainWindowViewModel : ViewModelBase
         {
             IsLoading = false;
         }
+    }
+
+    private void AddResolvedVideo(IVideo video, QueryResultKind kind, string collectionTitle, int index)
+    {
+        if (Videos.Any(v => v.Video.Id == video.Id))
+        {
+            return;
+        }
+
+        var vm = new SelectableVideoViewModel(video, kind, collectionTitle, index);
+        Videos.Add(vm);
+        FilteredVideos.Add(vm);
     }
 
     partial void OnSelectedVideoChanged(SelectableVideoViewModel? value)
@@ -603,6 +889,7 @@ public partial class MainWindowViewModel : ViewModelBase
         IsLoadingQualities = false;
         QualitiesPlaceholder = SelectedGlobalOutputType;
         StatusMessage = "Choose one download option. It applies to every selected item.";
+        OnPropertyChanged(nameof(IsAudioMetadataEditorVisible));
     }
 
     private void ClearSelectedVideoDetails()
@@ -618,6 +905,8 @@ public partial class MainWindowViewModel : ViewModelBase
     }
 
     private SemaphoreSlim _downloadSemaphore = new SemaphoreSlim(3, 3);
+    private CancellationTokenSource? _queueSaveDebounce;
+    private bool _isLoadingPersistedQueue;
     private const int MaxDownloadAttempts = 2;
 
     partial void OnAppSettingsChanged(AppSettings value)
@@ -639,38 +928,119 @@ public partial class MainWindowViewModel : ViewModelBase
 
         foreach (var vid in toDownload)
         {
-            EnqueueDownload(vid.Video, SelectedGlobalQuality);
+            EnqueueDownload(vid, SelectedGlobalQuality);
         }
     }
 
-    private void EnqueueDownload(IVideo video, string qualityPreference)
+    private void EnqueueDownload(SelectableVideoViewModel item, string qualityPreference)
     {
-        var safeTitle = string.Join("_", video.Title.Split(System.IO.Path.GetInvalidFileNameChars()));
+        var video = item.Video;
+        var safeTitle = SanitizeFileName(video.Title);
         var isAudioOnly = IsAudioOnlyPreference(qualityPreference);
         var ext = isAudioOnly ? ".mp3" : ".mp4";
-        var filePath = System.IO.Path.Combine(AppSettings.DownloadPath, $"{safeTitle}{ext}");
+        var outputDirectory = AppSettings.DownloadPath;
+
+        if (item.SourceKind is QueryResultKind.Playlist or QueryResultKind.Channel)
+        {
+            var folderName = SanitizeFileName(string.IsNullOrWhiteSpace(item.CollectionTitle)
+                ? item.SourceKind.ToString()
+                : item.CollectionTitle);
+            outputDirectory = System.IO.Path.Combine(outputDirectory, folderName);
+        }
+
+        var orderedTitle = item.CollectionIndex > 0
+                           && item.SourceKind is (QueryResultKind.Playlist or QueryResultKind.Channel)
+            ? $"{item.CollectionIndex:000} - {safeTitle}"
+            : safeTitle;
+
+        var filePath = GetUniqueOutputPath(outputDirectory, $"{orderedTitle}{ext}");
 
         var thumbnailUrl = video.Thumbnails.Count > 0
             ? video.Thumbnails.OrderByDescending(t => t.Resolution.Area).First().Url
             : string.Empty;
-        var taskVm = new DownloadTaskViewModel(video.Title, null, filePath, thumbnailUrl, qualityPreference, video.Url);
+
+        var metadata = item.Metadata.Clone();
+        if (string.IsNullOrWhiteSpace(metadata.SourceUrl))
+        {
+            metadata.SourceUrl = video.Url;
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.ArtworkUrl))
+        {
+            metadata.ArtworkUrl = thumbnailUrl;
+        }
+
+        var taskVm = new DownloadTaskViewModel(
+            video.Title,
+            null,
+            filePath,
+            thumbnailUrl,
+            qualityPreference,
+            video.Url,
+            metadata,
+            isAudioOnly,
+            item.SourceKind,
+            item.CollectionTitle,
+            item.CollectionIndex);
         DownloadQueue.Add(taskVm);
         UpdateQueueHeader();
 
-        _ = ProcessDownloadAsync(taskVm, video.Url, qualityPreference);
+        _ = StartQueueItemAsync(taskVm);
     }
 
-    private async Task ProcessDownloadAsync(DownloadTaskViewModel taskVm, string videoUrl, string qualityPreference)
+    private Task StartQueueItemAsync(DownloadTaskViewModel taskVm)
     {
-        await _downloadSemaphore.WaitAsync();
+        if (taskVm.State is DownloadTaskState.Completed or DownloadTaskState.Running)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (!taskVm.TryBeginProcessing())
+        {
+            StatusMessage = "That queue item is already scheduled.";
+            return Task.CompletedTask;
+        }
+
+        _ = ProcessDownloadAsync(taskVm);
+        return Task.CompletedTask;
+    }
+
+    private async Task ProcessDownloadAsync(DownloadTaskViewModel taskVm)
+    {
+        var semaphore = _downloadSemaphore;
+        var acquiredSemaphore = false;
+
         try
         {
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (taskVm.State == DownloadTaskState.Pending)
+                {
+                    taskVm.Status = "Queued";
+                }
+            });
+
+            await semaphore.WaitAsync(taskVm.CancellationTokenSource.Token);
+            acquiredSemaphore = true;
+
+            if (taskVm.State is DownloadTaskState.Paused or DownloadTaskState.Canceled
+                || taskVm.CancellationTokenSource.IsCancellationRequested)
+            {
+                return;
+            }
+
+            Dispatcher.UIThread.Post(() => taskVm.MarkRunning());
+
             for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
             {
                 try
                 {
-                    await RunDownloadAttemptAsync(taskVm, videoUrl, qualityPreference, attempt);
+                    await RunDownloadAttemptAsync(taskVm, taskVm.VideoUrl, taskVm.QualityLabel, attempt);
                     return;
+                }
+                catch (OperationCanceledException) when (taskVm.IsPauseRequested || taskVm.IsCancelRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex) when (attempt < MaxDownloadAttempts && IsTransientDownloadException(ex))
                 {
@@ -684,19 +1054,55 @@ public partial class MainWindowViewModel : ViewModelBase
                 }
             }
         }
+        catch (OperationCanceledException) when (taskVm.IsPauseRequested)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                taskVm.MarkPaused();
+                UpdateQueueHeader();
+            });
+        }
+        catch (OperationCanceledException) when (taskVm.IsCancelRequested)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                taskVm.MarkCanceled();
+                UpdateQueueHeader();
+            });
+        }
         catch (Exception ex)
         {
             Dispatcher.UIThread.Post(() =>
             {
-                taskVm.HasError = true;
-                taskVm.Status = GetFriendlyDownloadError(ex);
+                if (taskVm.IsPauseRequested)
+                {
+                    taskVm.MarkPaused();
+                }
+                else if (taskVm.IsCancelRequested)
+                {
+                    taskVm.MarkCanceled();
+                }
+                else
+                {
+                    taskVm.MarkFailed(GetFriendlyDownloadError(ex));
+                }
+
                 UpdateQueueHeader();
             });
         }
         finally
         {
-            _downloadSemaphore.Release();
-            Dispatcher.UIThread.Post(() => UpdateQueueHeader());
+            if (acquiredSemaphore)
+            {
+                semaphore.Release();
+            }
+
+            taskVm.EndProcessing();
+            Dispatcher.UIThread.Post(() =>
+            {
+                UpdateQueueHeader();
+                ScheduleSaveQueueState();
+            });
         }
     }
 
@@ -708,11 +1114,13 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         Dispatcher.UIThread.Post(() =>
         {
-            taskVm.HasError = false;
-            taskVm.IsCompleted = false;
             if (attempt > 1)
             {
-                taskVm.Status = $"Retrying download ({attempt}/{MaxDownloadAttempts})...";
+                taskVm.MarkRunning($"Retrying download ({attempt}/{MaxDownloadAttempts})...");
+            }
+            else
+            {
+                taskVm.MarkRunning();
             }
         });
 
@@ -827,19 +1235,29 @@ public partial class MainWindowViewModel : ViewModelBase
             }
         }
 
-        if (isAudioOnly && AppSettings.AutoTagAudio)
+        if (taskVm.IsAudio && AppSettings.AutoTagAudio)
         {
             Dispatcher.UIThread.Post(() => taskVm.Status = "Writing Apple Music-ready metadata...");
             try
             {
-                var videoInfo = await _videoDownloader.GetVideoDetailsAsync(videoUrl);
-                var thumbUrl = videoInfo.Thumbnails.OrderByDescending(t => t.Resolution.Area).FirstOrDefault()?.Url;
+                if (string.IsNullOrWhiteSpace(taskVm.Metadata.Artist)
+                    || string.IsNullOrWhiteSpace(taskVm.Metadata.ArtworkUrl))
+                {
+                    var videoInfo = await _videoDownloader.GetVideoDetailsAsync(videoUrl);
+                    if (string.IsNullOrWhiteSpace(taskVm.Metadata.Artist))
+                    {
+                        taskVm.Metadata.Artist = videoInfo.Author.ChannelTitle;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(taskVm.Metadata.ArtworkUrl))
+                    {
+                        taskVm.Metadata.ArtworkUrl = videoInfo.Thumbnails.OrderByDescending(t => t.Resolution.Area).FirstOrDefault()?.Url ?? string.Empty;
+                    }
+                }
+
                 await _audioMetadataService.ApplyYoutubeAudioMetadataAsync(
                     taskVm.FilePath,
-                    taskVm.Title,
-                    videoInfo.Author.ChannelTitle,
-                    thumbUrl,
-                    videoUrl,
+                    taskVm.Metadata.ToModel(),
                     taskVm.CancellationTokenSource.Token);
             }
             catch (Exception ex)
@@ -851,11 +1269,168 @@ public partial class MainWindowViewModel : ViewModelBase
 
         Dispatcher.UIThread.Post(() =>
         {
-            taskVm.Status = "Completed";
-            taskVm.IsCompleted = true;
-            taskVm.Progress = 100;
+            taskVm.MarkCompleted();
             UpdateQueueHeader();
         });
+    }
+
+    private void LoadPersistedQueue()
+    {
+        if (!File.Exists(AppPaths.QueueStateFile))
+        {
+            return;
+        }
+
+        try
+        {
+            _isLoadingPersistedQueue = true;
+            var json = File.ReadAllText(AppPaths.QueueStateFile);
+            var snapshot = JsonSerializer.Deserialize<DownloadQueueSnapshot>(json);
+            if (snapshot?.Items == null)
+            {
+                return;
+            }
+
+            foreach (var item in snapshot.Items)
+            {
+                var restoredState = item.State is DownloadTaskState.Pending or DownloadTaskState.Running
+                    ? DownloadTaskState.Paused
+                    : item.State;
+
+                var restoredStatus = item.State is DownloadTaskState.Pending or DownloadTaskState.Running
+                    ? "Paused after app restart. Resume restarts from the beginning."
+                    : item.Status;
+
+                var taskVm = new DownloadTaskViewModel(
+                    item.Title,
+                    null,
+                    item.FilePath,
+                    item.ThumbnailUrl,
+                    item.QualityLabel,
+                    item.VideoUrl,
+                    AudioMetadataViewModel.FromModel(item.Metadata ?? new AudioMetadata()),
+                    item.IsAudio,
+                    item.SourceKind,
+                    item.CollectionTitle,
+                    item.CollectionIndex,
+                    item.Id,
+                    restoredState,
+                    restoredState == DownloadTaskState.Paused ? 0 : item.Progress,
+                    restoredStatus);
+
+                DownloadQueue.Add(taskVm);
+            }
+
+            if (DownloadQueue.Count > 0)
+            {
+                StatusMessage = $"Restored {DownloadQueue.Count} queue item(s). Paused items will not restart until resumed.";
+            }
+        }
+        catch
+        {
+            StatusMessage = "Could not restore the saved download queue.";
+        }
+        finally
+        {
+            _isLoadingPersistedQueue = false;
+            UpdateQueueHeader();
+            ScheduleSaveQueueState();
+        }
+    }
+
+    private void ScheduleSaveQueueState()
+    {
+        if (_isLoadingPersistedQueue)
+        {
+            return;
+        }
+
+        try
+        {
+            _queueSaveDebounce?.Cancel();
+            var cts = new CancellationTokenSource();
+            _queueSaveDebounce = cts;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(500, cts.Token);
+                    var snapshot = await Dispatcher.UIThread.InvokeAsync(CreateQueueSnapshot);
+                    await SaveQueueSnapshotAsync(snapshot, cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    private DownloadQueueSnapshot CreateQueueSnapshot()
+    {
+        return new DownloadQueueSnapshot
+        {
+            Items = DownloadQueue.Select(item => new DownloadQueueItemSnapshot
+            {
+                Id = item.Id,
+                Title = item.Title,
+                FilePath = item.FilePath,
+                ThumbnailUrl = item.ThumbnailUrl,
+                QualityLabel = item.QualityLabel,
+                VideoUrl = item.VideoUrl,
+                State = item.State,
+                Progress = item.Progress,
+                Status = item.Status,
+                IsAudio = item.IsAudio,
+                SourceKind = item.SourceKind,
+                CollectionTitle = item.CollectionTitle,
+                CollectionIndex = item.CollectionIndex,
+                Metadata = item.Metadata.ToModel()
+            }).ToList()
+        };
+    }
+
+    private static async Task SaveQueueSnapshotAsync(DownloadQueueSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(AppPaths.QueueStateFile);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+        await File.WriteAllTextAsync(AppPaths.QueueStateFile, json, cancellationToken);
+    }
+
+    private string GetUniqueOutputPath(string outputDirectory, string fileName)
+    {
+        Directory.CreateDirectory(outputDirectory);
+
+        var baseName = Path.GetFileNameWithoutExtension(fileName);
+        var extension = Path.GetExtension(fileName);
+        var candidate = Path.Combine(outputDirectory, fileName);
+        var index = 2;
+
+        while (File.Exists(candidate) || DownloadQueue.Any(q => string.Equals(q.FilePath, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidate = Path.Combine(outputDirectory, $"{baseName} ({index}){extension}");
+            index++;
+        }
+
+        return candidate;
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var cleaned = string.Join("_", value.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        return string.IsNullOrWhiteSpace(cleaned) ? "Untitled" : cleaned.Trim();
     }
 
     private static bool IsTransientDownloadException(Exception ex)
