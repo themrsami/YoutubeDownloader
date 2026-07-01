@@ -3,12 +3,12 @@
   <img src="https://img.shields.io/badge/Made_in-Pakistan-green.svg" alt="Made in Pakistan" />
   <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build Passing" />
   <img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg" alt="Maintained" />
-  <img src="https://img.shields.io/badge/release-v1.1.0-blue.svg" alt="Release v1.1.0" />
+  <img src="https://img.shields.io/badge/release-v1.2.0-blue.svg" alt="Release v1.2.0" />
   <img src="https://img.shields.io/badge/License-Proprietary-red.svg" alt="License Proprietary" />
 
   <h1>🚀 Premium YouTube Downloader</h1>
   <p><strong>An advanced, lightning-fast desktop application to download YouTube videos, playlists, and channels in maximum quality.</strong></p>
-  <p><i>Developed by <b>themrsami</b></i></p>
+  <p><i>Developed by <b>fullstackusama</b></i></p>
 </div>
 
 <hr/>
@@ -86,5 +86,5 @@ On Apple Silicon, the app is created at `artifacts/macos/osx-arm64/Premium YouTu
 <hr/>
 
 <div align="center">
-  <p>Copyright © 2026 themrsami. All Rights Reserved.</p>
+  <p>Copyright © 2026 fullstackusama. All Rights Reserved.</p>
 </div>
