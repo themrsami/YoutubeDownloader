@@ -28,7 +28,8 @@
 
     <Panel Background="{DynamicResource AppBackdropBrush}">
         <Grid RowDefinitions="50,*">
-            <Border Grid.Row="0"
+            <Border x:Name="TitleBarChrome"
+                    Grid.Row="0"
                     Classes="titlebar"
                     Padding="86,7,14,7">
                 <Grid ColumnDefinitions="*,Auto"
