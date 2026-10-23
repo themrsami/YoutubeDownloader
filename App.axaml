@@ -10,6 +10,17 @@
     <Application.DataTemplates>
         <local:ViewLocator/>
     </Application.DataTemplates>
+
+    <!-- macOS application menu. Without it Avalonia shows a generic "About Avalonia" item. -->
+    <NativeMenu.Menu>
+        <NativeMenu>
+            <NativeMenuItem Header="Settings…"
+                            Gesture="Meta+OemComma"
+                            Click="OnSettingsMenuItemClick" />
+            <NativeMenuItem Header="Show Download Queue"
+                            Click="OnQueueMenuItemClick" />
+        </NativeMenu>
+    </NativeMenu.Menu>
   
     <Application.Styles>
         <themes:MaterialTheme PrimaryColor="Teal" SecondaryColor="Amber" />

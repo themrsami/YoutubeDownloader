@@ -711,4 +711,10 @@
     <Style Selector="CheckBox.macos-switch:pressed /template/ Border#SwitchKnob">
         <Setter Property="Width" Value="22" />
     </Style>
+
+    <!-- Windows and Linux draw the window title inside the extended client area, right on top
+         of the search field. The app's own toolbar replaces it (macOS uses native chrome). -->
+    <Style Selector="Panel#PART_TitleTextPanel > TextBlock">
+        <Setter Property="IsVisible" Value="False" />
+    </Style>
 </Styles>

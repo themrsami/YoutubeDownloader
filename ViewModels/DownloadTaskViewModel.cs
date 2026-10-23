@@ -58,6 +58,9 @@ public partial class DownloadTaskViewModel : ViewModelBase
     [ObservableProperty]
     private int _collectionIndex;
 
+    [ObservableProperty]
+    private string _formatSummary = string.Empty;
+
     public StreamQualityOption? QualityOption { get; }
     public AudioMetadataViewModel Metadata { get; }
     public CancellationTokenSource CancellationTokenSource { get; private set; }
@@ -86,6 +89,8 @@ public partial class DownloadTaskViewModel : ViewModelBase
     public bool CanRetry => State is DownloadTaskState.Failed or DownloadTaskState.Canceled;
     public bool CanRemove => State != DownloadTaskState.Running;
     public bool CanReveal => !string.IsNullOrWhiteSpace(FilePath) && (IsCompleted || File.Exists(FilePath));
+    public bool CanOpenFile => IsCompleted && !string.IsNullOrWhiteSpace(FilePath);
+    public bool HasFormatSummary => !string.IsNullOrWhiteSpace(FormatSummary);
 
     public DownloadTaskViewModel(
         string title,
@@ -164,10 +169,10 @@ public partial class DownloadTaskViewModel : ViewModelBase
         Status = status;
     }
 
-    public void MarkCompleted()
+    public void MarkCompleted(string status = "Completed")
     {
         State = DownloadTaskState.Completed;
-        Status = "Completed";
+        Status = status;
         Progress = 100;
     }
 
@@ -231,6 +236,12 @@ public partial class DownloadTaskViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(FileName));
         OnPropertyChanged(nameof(CanReveal));
+        OnPropertyChanged(nameof(CanOpenFile));
+    }
+
+    partial void OnFormatSummaryChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasFormatSummary));
     }
 
     partial void OnThumbnailUrlChanged(string value)
@@ -242,6 +253,7 @@ public partial class DownloadTaskViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(IsProgressVisible));
         OnPropertyChanged(nameof(CanReveal));
+        OnPropertyChanged(nameof(CanOpenFile));
     }
 
     partial void OnHasErrorChanged(bool value)
@@ -361,10 +373,11 @@ public partial class DownloadTaskViewModel : ViewModelBase
 
             if (OperatingSystem.IsWindows())
             {
+                // "/select," on a missing file opens the user's Documents folder instead.
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
-                    Arguments = $"/select,\"{FilePath}\"",
+                    Arguments = File.Exists(FilePath) ? $"/select,\"{FilePath}\"" : $"\"{dir}\"",
                     UseShellExecute = true
                 });
             }
@@ -390,17 +403,51 @@ public partial class DownloadTaskViewModel : ViewModelBase
             }
             else
             {
-                Process.Start(new ProcessStartInfo
+                var processInfo = new ProcessStartInfo
                 {
                     FileName = "xdg-open",
-                    Arguments = $"\"{dir}\"",
                     UseShellExecute = false
-                });
+                };
+                processInfo.ArgumentList.Add(dir);
+                Process.Start(processInfo);
             }
         }
         catch
         {
             Status = "Could not open download folder.";
+        }
+    }
+
+    [RelayCommand]
+    private void OpenFile()
+    {
+        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        {
+            Status = "The downloaded file was moved or deleted.";
+            OnPropertyChanged(nameof(CanReveal));
+            return;
+        }
+
+        try
+        {
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
+            {
+                var processInfo = new ProcessStartInfo
+                {
+                    FileName = OperatingSystem.IsMacOS() ? "open" : "xdg-open",
+                    UseShellExecute = false
+                };
+                processInfo.ArgumentList.Add(FilePath);
+                Process.Start(processInfo);
+            }
+            else
+            {
+                Process.Start(new ProcessStartInfo(FilePath) { UseShellExecute = true });
+            }
+        }
+        catch
+        {
+            Status = "Could not open the downloaded file.";
         }
     }
 }
