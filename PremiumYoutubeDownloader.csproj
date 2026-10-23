@@ -5,12 +5,22 @@
     <RuntimeIdentifiers>win-x64;win-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <Nullable>enable</Nullable>
     <ApplicationManifest Condition="'$(RuntimeIdentifier)' == '' Or $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))">app.manifest</ApplicationManifest>
+    <ApplicationIcon>Platforms\Windows\AppIcon.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+
+    <!-- version.json is the single source of truth for the app version (also read by build-macos.sh). -->
+    <AppVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/version.json')), '"version"\s*:\s*"([^"]+)"').Groups[1].Value)</AppVersion>
+    <Version>$(AppVersion)</Version>
+    <FileVersion>$(AppVersion).0</FileVersion>
+    <Product>Premium YouTube Downloader</Product>
+    <Company>fullstackusama</Company>
+    <Copyright>Copyright © 2026 fullstackusama. All Rights Reserved.</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
-    <AvaloniaResource Include="Assets\**" />
+    <!-- README screenshots are documentation only; embedding them added ~4.5 MB to every build. -->
+    <AvaloniaResource Include="Assets\**" Exclude="Assets\Screenshots\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,14 +33,14 @@
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.1" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Material.Avalonia" Version="3.17.0" />
     <PackageReference Include="Material.Icons.Avalonia" Version="3.0.2" />
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
     <PackageReference Include="System.Text.Json" Version="9.0.0" />
     <PackageReference Include="TagLibSharp" Version="2.3.0" />
     <PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
-    <PackageReference Include="YoutubeExplode" Version="6.6.0" />
-    <PackageReference Include="YoutubeExplode.Converter" Version="6.6.0" />
+    <PackageReference Include="YoutubeExplode" Version="6.6.2" />
+    <PackageReference Include="YoutubeExplode.Converter" Version="6.6.2" />
   </ItemGroup>
 </Project>

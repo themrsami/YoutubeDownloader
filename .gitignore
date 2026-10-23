@@ -482,6 +482,7 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
-f f m p e g . e x e  
- f f p r o b e . e x e  
- 
+
+# FFmpeg binaries downloaded next to the app by older builds
+ffmpeg.exe
+ffprobe.exe
