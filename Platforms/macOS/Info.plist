@@ -18,14 +18,32 @@
   <string>Premium YouTube Downloader</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <!-- build-macos.sh overwrites both versions from version.json. -->
   <key>CFBundleShortVersionString</key>
-  <string>1.1.0</string>
+  <string>1.2.0</string>
   <key>CFBundleVersion</key>
-  <string>1.1.0</string>
+  <string>1.2.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.video</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <!-- Shown by macOS privacy prompts when downloads are saved to these locations. -->
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Downloaded videos and music are saved to your Downloads folder.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Downloaded videos and music are saved to the folder you chose on your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Downloaded videos and music are saved to the folder you chose in Documents.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Downloaded videos and music are saved to the external drive you chose.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Downloaded videos and music are saved to the network folder you chose.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright 2026 themrsami. All Rights Reserved.</string>
 </dict>

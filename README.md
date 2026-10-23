@@ -21,9 +21,9 @@ Built with performance in mind, this tool bypasses standard API limitations to d
 
 ## ✨ Key Features
 
-- **🔥 Ultra-Fast Multi-Threaded Engine:** Maximize your bandwidth with chunked downloading. Live MB/s speed indicators for every item in your queue.
-- **🎥 4K / 8K Native Support:** Automatically merges the highest available separated video and audio streams using an integrated FFmpeg pipeline.
-- **📝 Advanced Subtitle Embedding:** Native subtitle downloading (VTT to SRT conversion). Automatically burns multi-language subtitles natively into the MP4 container for instant player recognition.
+- **🔥 Ultra-Fast Multi-Threaded Engine:** Maximize your bandwidth with chunked downloading and 1–6 simultaneous downloads. Live speed, size and time-remaining indicators for every item in your queue.
+- **🎥 4K / 8K Native Support:** "Best Video" merges the highest available separated video and audio streams using an integrated FFmpeg pipeline, copying streams instead of re-encoding whenever possible.
+- **📝 Advanced Subtitle Embedding:** Saves captions as SRT beside the video, or embeds them as a selectable track in the video file, preferring uploader-written captions over auto-generated ones.
 - **🎨 Premium Dark UI:** A stunning, glassmorphic Avalonia UI with real-time progress bars, thumbnail previews, and granular quality selection.
 - **🎶 Audio Extraction:** One-click pristine audio extraction (MP3) with automatic ID3 tagging and album art generation.
 - **⚙️ Deep Customization:** Global quality preferences, local overrides, customizable download paths, and more.
@@ -45,6 +45,15 @@ You can download the pre-compiled, self-contained Windows portable executable di
 1. Go to the [Releases Tab](../../releases/latest).
 2. Download the latest `PremiumYoutubeDownloader.exe`.
 3. Double-click to run! (No installation required—it's a portable executable).
+
+Build the portable Windows executable from source (requires the .NET 8 SDK):
+
+```powershell
+./build-windows.ps1              # win-x64
+./build-windows.ps1 -Runtime win-arm64
+```
+
+The executable is written to `artifacts/windows/<runtime>/`.
 
 ### macOS
 
@@ -70,11 +79,25 @@ On Apple Silicon, the app is created at `artifacts/macos/osx-arm64/Premium YouTu
 ./build-macos.sh osx-x64
 ```
 
+The script also writes a distributable `PremiumYoutubeDownloader-<version>-<runtime>.zip` next to the app bundle and stamps the bundle with the version from `version.json`.
+
+**FFmpeg on macOS:** the app uses FFmpeg from Homebrew or MacPorts when it is installed (`brew install ffmpeg`), even when launched from Finder. Otherwise it downloads FFmpeg automatically on first launch. That automatic download is an Intel build, so Apple Silicon Macs need Rosetta (`softwareupdate --install-rosetta`); installing FFmpeg with Homebrew avoids this.
+
 ## 💡 How to Use
 
-1. **Paste your URL:** Paste a single video or a massive playlist link into the top search bar.
-2. **Select Quality:** Use the global dropdown to set your preferred resolution (e.g., 1080p, 4K, Audio Only).
-3. **Queue & Download:** Hit "Download" and watch the ultra-fast FFmpeg engine handle the heavy lifting!
+1. **Paste your URL:** Paste (or drag and drop) a single video, playlist or channel link into the top search bar, or type a search. `Ctrl+L` (`⌘L` on macOS) jumps to the search bar.
+2. **Select Quality:** Use the global dropdown to choose MP3, Best Video (up to 8K), 1080p, 720p or YouTube's native combined stream.
+3. **Queue & Download:** Hit "Add to Queue" and watch the ultra-fast FFmpeg engine handle the heavy lifting! Large playlists and channels keep loading in the background; press "Stop" to keep the results loaded so far.
+
+## 📁 Where the app keeps its files
+
+| | Windows | macOS |
+|---|---|---|
+| Settings, queue and FFmpeg | `%LOCALAPPDATA%\PremiumYoutubeDownloader` | `~/Library/Application Support/PremiumYoutubeDownloader` |
+| Log file (for bug reports) | `…\PremiumYoutubeDownloader\logs\app.log` | `…/PremiumYoutubeDownloader/logs/app.log` |
+| Default download folder | Downloads | Downloads |
+
+Older Windows builds stored `settings.json`, `download-queue.json` and FFmpeg next to the executable. They are still picked up from there, so upgrading keeps your settings and queue.
 
 ## 🛠️ Technology Stack
 

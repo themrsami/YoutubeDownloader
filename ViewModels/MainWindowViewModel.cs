@@ -8,14 +8,16 @@ using System.IO;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PremiumYoutubeDownloader.Models;
 using PremiumYoutubeDownloader.Services;
 using Avalonia.Threading;
-using YoutubeExplode;
+using YoutubeExplode.Exceptions;
 using YoutubeExplode.Videos;
+using YoutubeExplode.Videos.ClosedCaptions;
 using Material.Styles.Themes;
 using Material.Colors;
 
@@ -23,10 +25,21 @@ namespace PremiumYoutubeDownloader.ViewModels;
 
 public partial class MainWindowViewModel : ViewModelBase
 {
+    private static readonly JsonSerializerOptions QueueJsonOptions = new() { WriteIndented = true };
+
     private readonly QueryResolverService _queryResolver;
     private readonly VideoDownloaderService _videoDownloader;
     private readonly AudioMetadataService _audioMetadataService;
-    private readonly YoutubeClient _youtube;
+    private readonly DownloadSlotLimiter _downloadSlots;
+    private readonly HashSet<string> _resolvedVideoIds = new(StringComparer.Ordinal);
+
+    private CancellationTokenSource? _searchCts;
+    private CancellationTokenSource? _settingsSaveDebounce;
+    private CancellationTokenSource? _queueSaveDebounce;
+    private bool _isLoadingPersistedQueue;
+    private bool _isQuitConfirmed;
+    private int _selectedCount;
+    private const int MaxDownloadAttempts = 2;
 
     [ObservableProperty]
     private bool _isInitializing;
@@ -36,16 +49,15 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel()
     {
-        _youtube = new YoutubeClient();
         _queryResolver = new QueryResolverService();
         _videoDownloader = new VideoDownloaderService();
         _audioMetadataService = new AudioMetadataService();
         Videos = new ObservableCollection<SelectableVideoViewModel>();
         FilteredVideos = new ObservableCollection<SelectableVideoViewModel>();
-        AvailableQualities = new ObservableCollection<StreamQualityOption>();
         DownloadQueue = new ObservableCollection<DownloadTaskViewModel>();
-        AppSettings = SettingsManager.LoadSettings();
-        AppSettings.ThemeMode = "Light";
+        _appSettings = SettingsManager.LoadSettings();
+        _appSettings.PropertyChanged += OnAppSettingsPropertyChanged;
+        _downloadSlots = new DownloadSlotLimiter(_appSettings.ConcurrentDownloads);
         Videos.CollectionChanged += OnVideosCollectionChanged;
         FilteredVideos.CollectionChanged += (_, _) =>
         {
@@ -55,7 +67,7 @@ public partial class MainWindowViewModel : ViewModelBase
         DownloadQueue.CollectionChanged += OnDownloadQueueChanged;
         LoadPersistedQueue();
         Dispatcher.UIThread.Post(() => ApplyTheme(AppSettings.ThemeMode), Avalonia.Threading.DispatcherPriority.Loaded);
-        
+
         _ = InitializeAppAsync();
     }
 
@@ -74,7 +86,9 @@ public partial class MainWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            InitializationMessage = "Error downloading components: " + ex.Message;
+            AppLog.Error("FFmpeg bootstrap", ex);
+            InitializationMessage = "Could not download FFmpeg: " + ex.Message
+                                    + " MP3 and HD downloads will try again when you start one.";
             await Task.Delay(5000);
             IsInitializing = false;
         }
@@ -91,13 +105,20 @@ public partial class MainWindowViewModel : ViewModelBase
         FilteredVideos.Clear();
         foreach (var v in Videos)
         {
-            if (string.IsNullOrWhiteSpace(value) || v.Video.Title.Contains(value, StringComparison.OrdinalIgnoreCase))
+            if (MatchesFilter(v, value))
             {
                 FilteredVideos.Add(v);
             }
         }
 
         RaiseSelectionStateChanged();
+    }
+
+    private static bool MatchesFilter(SelectableVideoViewModel video, string filter)
+    {
+        return string.IsNullOrWhiteSpace(filter)
+               || video.Title.Contains(filter, StringComparison.OrdinalIgnoreCase)
+               || video.Author.Contains(filter, StringComparison.OrdinalIgnoreCase);
     }
 
     [ObservableProperty]
@@ -115,20 +136,20 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public ObservableCollection<SelectableVideoViewModel> Videos { get; }
     public ObservableCollection<SelectableVideoViewModel> FilteredVideos { get; }
-    
-    public ObservableCollection<StreamQualityOption> AvailableQualities { get; }
-    
+
     public ObservableCollection<DownloadTaskViewModel> DownloadQueue { get; }
 
     public ObservableCollection<string> GlobalQualities { get; } = new ObservableCollection<string>
     {
-        "Highest Quality MP3",
-        "Highest Video (Native)",
-        "1080p Video (Requires FFmpeg)",
-        "720p Video (Requires FFmpeg)"
+        VideoDownloaderService.HighestMp3Preference,
+        VideoDownloaderService.BestVideoPreference,
+        VideoDownloaderService.Video1080pPreference,
+        VideoDownloaderService.Video720pPreference,
+        VideoDownloaderService.NativeVideoPreference
     };
 
-    public ObservableCollection<string> ThemeModes { get; } = new ObservableCollection<string> { "Light" };
+    public IReadOnlyList<int> ConcurrentDownloadOptions { get; } =
+        Enumerable.Range(SettingsManager.MinConcurrentDownloads, SettingsManager.MaxConcurrentDownloads).ToList();
 
     [ObservableProperty]
     private string _selectedSection = "Downloader";
@@ -141,11 +162,13 @@ public partial class MainWindowViewModel : ViewModelBase
     public int FilteredVideoCount => FilteredVideos.Count;
     public bool HasResults => Videos.Count > 0;
     public bool HasFilteredVideos => FilteredVideos.Count > 0;
-    public int SelectedDownloadCount => Videos.Count(v => v.IsSelected);
+    public int SelectedDownloadCount => _selectedCount;
     public bool HasSelectedDownloads => SelectedDownloadCount > 0;
     public bool HasDownloaderActivity => HasSearched || HasResults;
-    public bool ShowNoResultsState => HasSearched && !HasResults && !IsLoading;
+    public bool ShowNoResultsState => HasSearched && !HasResults && !IsLoading && !IsSearchRunning;
     public bool IsVideoEmpty => HasSearched && HasResults && !IsVideoLoaded && !IsLoading;
+    public bool IsBackgroundSearchRunning => IsSearchRunning && !IsLoading;
+    public string AddToQueueLabel => SelectedDownloadCount > 1 ? $"Add {SelectedDownloadCount} to Queue" : "Add to Queue";
 
     public int QueueItemCount => DownloadQueue.Count;
     public int ActiveDownloadCount => DownloadQueue.Count(q => q.State is DownloadTaskState.Pending or DownloadTaskState.Running);
@@ -167,31 +190,28 @@ public partial class MainWindowViewModel : ViewModelBase
         ? "No downloads queued"
         : $"{RunningDownloadCount} running, {ActiveDownloadCount} queued/active, {PausedDownloadCount} paused, {CompletedDownloadCount} done, {FailedDownloadCount} failed";
 
-    public string ThemeToggleLabel => "Light";
-
     [ObservableProperty]
-    private string _selectedGlobalQuality = "Highest Quality MP3";
+    private string _selectedGlobalQuality = VideoDownloaderService.HighestMp3Preference;
 
     public string SelectedGlobalQualitySummary => SelectedGlobalQuality switch
     {
-        "Highest Quality MP3" => "Applies to every selected item. Converts the best audio to a 320 kbps MP3.",
-        "Highest Video (Native)" => "Applies to every selected item. Saves the best native video stream.",
-        "1080p Video (Requires FFmpeg)" => "Applies to every selected item. Uses 1080p when available.",
-        "720p Video (Requires FFmpeg)" => "Applies to every selected item. Uses 720p when available.",
+        VideoDownloaderService.HighestMp3Preference => "Applies to every selected item. Converts the best audio to a 320 kbps MP3.",
+        VideoDownloaderService.BestVideoPreference => "Applies to every selected item. Merges the highest resolution available (up to 4K/8K) with the best audio.",
+        VideoDownloaderService.NativeVideoPreference => "Applies to every selected item. Saves YouTube's combined stream without re-muxing when it exists.",
+        VideoDownloaderService.Video1080pPreference => "Applies to every selected item. Uses 1080p, or the closest lower resolution.",
+        VideoDownloaderService.Video720pPreference => "Applies to every selected item. Uses 720p, or the closest lower resolution.",
         _ => "Applies this choice to every selected item."
     };
 
-    public string SelectedGlobalOutputType => IsAudioOnlyPreference(SelectedGlobalQuality)
-        ? "MP3 audio"
-        : "MP4 video";
-
-    [ObservableProperty]
-    private string _queueTabHeader = "Queue";
+    public string SelectedGlobalOutputType => SelectedGlobalQuality switch
+    {
+        _ when VideoDownloaderService.IsAudioPreference(SelectedGlobalQuality) => "MP3 audio",
+        VideoDownloaderService.BestVideoPreference => "MP4 video (WebM when the top resolution is VP9 only)",
+        _ => "MP4 video"
+    };
 
     private void UpdateQueueHeader()
     {
-        var activeCount = DownloadQueue.Count(q => q.State is DownloadTaskState.Pending or DownloadTaskState.Running);
-        QueueTabHeader = activeCount > 0 ? $"Queue ({activeCount})" : "Queue";
         RaiseQueueStateChanged();
     }
 
@@ -207,7 +227,6 @@ public partial class MainWindowViewModel : ViewModelBase
         OnPropertyChanged(nameof(SelectedGlobalQualitySummary));
         OnPropertyChanged(nameof(SelectedGlobalOutputType));
         OnPropertyChanged(nameof(IsAudioMetadataEditorVisible));
-        QualitiesPlaceholder = SelectedGlobalOutputType;
     }
 
     partial void OnCurrentResultKindChanged(QueryResultKind value)
@@ -228,9 +247,6 @@ public partial class MainWindowViewModel : ViewModelBase
     private SelectableVideoViewModel? _selectedVideo;
 
     [ObservableProperty]
-    private StreamQualityOption? _selectedQuality;
-
-    [ObservableProperty]
     private string _videoTitle = string.Empty;
 
     [ObservableProperty]
@@ -244,6 +260,9 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isLoading = false;
+
+    [ObservableProperty]
+    private bool _isSearchRunning;
 
     [ObservableProperty]
     private bool _hasSearched = false;
@@ -261,13 +280,10 @@ public partial class MainWindowViewModel : ViewModelBase
     private string _currentCollectionTitle = string.Empty;
 
     [ObservableProperty]
-    private bool _isLoadingQualities = false;
-
-    [ObservableProperty]
-    private string _qualitiesPlaceholder = "Select Quality...";
-
-    [ObservableProperty]
     private string _statusMessage = "Ready";
+
+    [ObservableProperty]
+    private bool _isQuitConfirmationVisible;
 
     public string CurrentResultKindLabel => CurrentResultKind switch
     {
@@ -278,7 +294,16 @@ public partial class MainWindowViewModel : ViewModelBase
         _ => "Results"
     };
 
-    public bool IsAudioMetadataEditorVisible => IsVideoLoaded && IsAudioOnlyPreference(SelectedGlobalQuality);
+    public bool IsAudioMetadataEditorVisible => IsVideoLoaded && VideoDownloaderService.IsAudioPreference(SelectedGlobalQuality);
+
+    public string QuitConfirmationMessage => ActiveDownloadCount == 1
+        ? "1 download is still in progress. It will be paused and can be resumed the next time you open the app."
+        : $"{ActiveDownloadCount} downloads are still in progress. They will be paused and can be resumed the next time you open the app.";
+
+    /// <summary>
+    /// Set by the view; closes the main window once the user confirmed quitting.
+    /// </summary>
+    public Action? RequestCloseAction { get; set; }
 
     private void RaiseResultStateChanged()
     {
@@ -295,15 +320,31 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(SelectedDownloadCount));
         OnPropertyChanged(nameof(HasSelectedDownloads));
+        OnPropertyChanged(nameof(AddToQueueLabel));
     }
 
     private void OnVideosCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            _resolvedVideoIds.Clear();
+            foreach (var item in Videos)
+            {
+                _resolvedVideoIds.Add(item.Video.Id.Value);
+            }
+
+            _selectedCount = Videos.Count(v => v.IsSelected);
+        }
+
         if (e.NewItems != null)
         {
             foreach (SelectableVideoViewModel item in e.NewItems)
             {
                 item.PropertyChanged += OnSelectableVideoPropertyChanged;
+                if (item.IsSelected)
+                {
+                    _selectedCount++;
+                }
             }
         }
 
@@ -312,6 +353,11 @@ public partial class MainWindowViewModel : ViewModelBase
             foreach (SelectableVideoViewModel item in e.OldItems)
             {
                 item.PropertyChanged -= OnSelectableVideoPropertyChanged;
+                _resolvedVideoIds.Remove(item.Video.Id.Value);
+                if (item.IsSelected)
+                {
+                    _selectedCount--;
+                }
             }
         }
 
@@ -321,8 +367,11 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnSelectableVideoPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(SelectableVideoViewModel.IsSelected))
+        if (e.PropertyName == nameof(SelectableVideoViewModel.IsSelected) && sender is SelectableVideoViewModel item)
         {
+            // Kept as a running count: re-counting thousands of channel uploads on every
+            // checkbox change made "select all" quadratic.
+            _selectedCount = Math.Max(0, _selectedCount + (item.IsSelected ? 1 : -1));
             RaiseSelectionStateChanged();
         }
     }
@@ -362,19 +411,19 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnDownloadItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // Progress and status change many times per second while downloading. The queue
+        // counters only depend on the state, and restored items restart from zero anyway, so
+        // reacting to progress ticks only burned UI time and rewrote the queue file constantly.
         if (e.PropertyName is nameof(DownloadTaskViewModel.State)
             or nameof(DownloadTaskViewModel.IsCompleted)
-            or nameof(DownloadTaskViewModel.HasError)
-            or nameof(DownloadTaskViewModel.Progress)
-            or nameof(DownloadTaskViewModel.Status))
+            or nameof(DownloadTaskViewModel.HasError))
         {
             RaiseQueueStateChanged();
         }
 
         if (e.PropertyName is nameof(DownloadTaskViewModel.State)
-            or nameof(DownloadTaskViewModel.Status)
-            or nameof(DownloadTaskViewModel.Progress)
             or nameof(DownloadTaskViewModel.FilePath)
+            or nameof(DownloadTaskViewModel.FormatSummary)
             or nameof(DownloadTaskViewModel.Metadata))
         {
             ScheduleSaveQueueState();
@@ -400,12 +449,20 @@ public partial class MainWindowViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasFailedDownloads));
         OnPropertyChanged(nameof(QueueBadgeText));
         OnPropertyChanged(nameof(QueueSummary));
+        OnPropertyChanged(nameof(QuitConfirmationMessage));
     }
 
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(ShowNoResultsState));
         OnPropertyChanged(nameof(IsVideoEmpty));
+        OnPropertyChanged(nameof(IsBackgroundSearchRunning));
+    }
+
+    partial void OnIsSearchRunningChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowNoResultsState));
+        OnPropertyChanged(nameof(IsBackgroundSearchRunning));
     }
 
     partial void OnIsVideoLoadedChanged(bool value)
@@ -583,8 +640,16 @@ public partial class MainWindowViewModel : ViewModelBase
             return Task.CompletedTask;
         }
 
+        var wasProcessing = item.IsProcessing;
         item.RequestCancel();
         item.MarkCanceled();
+
+        // A running item deletes its own partial file once the download loop unwinds.
+        if (!wasProcessing)
+        {
+            DeletePartialOutput(item);
+        }
+
         StatusMessage = "Canceled queue item.";
         UpdateQueueHeader();
         ScheduleSaveQueueState();
@@ -623,6 +688,11 @@ public partial class MainWindowViewModel : ViewModelBase
             item.RequestCancel();
         }
 
+        if (!item.IsCompleted && !item.IsProcessing)
+        {
+            DeletePartialOutput(item);
+        }
+
         DownloadQueue.Remove(item);
         StatusMessage = "Removed queue item.";
         UpdateQueueHeader();
@@ -649,7 +719,7 @@ public partial class MainWindowViewModel : ViewModelBase
     [RelayCommand]
     private void ResetDownloaderState()
     {
-        if (IsLoading) return;
+        CancelActiveSearch();
 
         SearchQuery = string.Empty;
         Videos.Clear();
@@ -658,54 +728,59 @@ public partial class MainWindowViewModel : ViewModelBase
         IsAllSelected = false;
         SelectedVideo = null;
         ClearSelectedVideoDetails();
-        AvailableQualities.Clear();
         IsPlaylistLoaded = false;
         CurrentResultKind = QueryResultKind.Video;
         CurrentCollectionTitle = string.Empty;
-        IsLoadingQualities = false;
         HasSearched = false;
+        IsLoading = false;
         StatusMessage = "Ready";
     }
 
     [RelayCommand]
     private void SaveSettings()
     {
-        AppSettings.ThemeMode = "Light";
-        SettingsManager.SaveSettings(AppSettings);
-        ApplyTheme("Light");
-        StatusMessage = "Settings Saved successfully!";
-        OnPropertyChanged(nameof(ThemeToggleLabel));
+        _settingsSaveDebounce?.Cancel();
+        StatusMessage = SettingsManager.SaveSettings(AppSettings)
+            ? "Settings saved."
+            : "Could not save settings. Check that your user folder is writable.";
     }
 
-    [RelayCommand]
-    private void ToggleTheme()
+    private void OnAppSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        AppSettings = CloneSettings(AppSettings, themeMode: "Light");
-        SettingsManager.SaveSettings(AppSettings);
-        ApplyTheme("Light");
-        StatusMessage = "Light appearance enabled.";
-    }
-
-    private static AppSettings CloneSettings(
-        AppSettings source,
-        string? downloadPath = null,
-        int? concurrentDownloads = null,
-        string? themeMode = null,
-        bool? autoTagAudio = null,
-        bool? downloadSubtitles = null,
-        bool? embedSubtitles = null,
-        string? subtitleLanguage = null)
-    {
-        return new AppSettings
+        if (e.PropertyName == nameof(Models.AppSettings.ConcurrentDownloads))
         {
-            DownloadPath = downloadPath ?? source.DownloadPath,
-            ConcurrentDownloads = concurrentDownloads ?? source.ConcurrentDownloads,
-            ThemeMode = themeMode ?? source.ThemeMode,
-            AutoTagAudio = autoTagAudio ?? source.AutoTagAudio,
-            DownloadSubtitles = downloadSubtitles ?? source.DownloadSubtitles,
-            EmbedSubtitles = embedSubtitles ?? source.EmbedSubtitles,
-            SubtitleLanguage = subtitleLanguage ?? source.SubtitleLanguage
-        };
+            _downloadSlots.SetLimit(AppSettings.ConcurrentDownloads);
+        }
+
+        // Settings apply immediately, so persist them too instead of silently losing them
+        // when the user forgets to press Save.
+        _settingsSaveDebounce?.Cancel();
+        var cts = new CancellationTokenSource();
+        _settingsSaveDebounce = cts;
+        var settings = AppSettings;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(400, cts.Token);
+                SettingsManager.SaveSettings(settings);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+    }
+
+    partial void OnAppSettingsChanged(AppSettings? oldValue, AppSettings newValue)
+    {
+        if (oldValue != null)
+        {
+            oldValue.PropertyChanged -= OnAppSettingsPropertyChanged;
+        }
+
+        newValue.PropertyChanged += OnAppSettingsPropertyChanged;
+        _downloadSlots?.SetLimit(newValue.ConcurrentDownloads);
     }
 
     private void ApplyTheme(string themeMode)
@@ -713,7 +788,7 @@ public partial class MainWindowViewModel : ViewModelBase
         if (Avalonia.Application.Current != null)
         {
             Avalonia.Application.Current.RequestedThemeVariant = themeMode == "Light" ? Avalonia.Styling.ThemeVariant.Light : Avalonia.Styling.ThemeVariant.Dark;
-            
+
             var materialTheme = Avalonia.Application.Current.Styles.OfType<MaterialTheme>().FirstOrDefault();
             if (materialTheme != null)
             {
@@ -732,11 +807,19 @@ public partial class MainWindowViewModel : ViewModelBase
         if (SelectDownloadFolderAction != null)
         {
             var path = await SelectDownloadFolderAction();
-            if (!string.IsNullOrEmpty(path))
+            if (string.IsNullOrEmpty(path))
             {
-                AppSettings = CloneSettings(AppSettings, downloadPath: path);
-                StatusMessage = "Download path updated.";
+                return;
             }
+
+            if (!IsDirectoryWritable(path))
+            {
+                StatusMessage = $"Can't write to '{path}'. Choose another folder.";
+                return;
+            }
+
+            AppSettings.DownloadPath = path;
+            StatusMessage = "Download path updated.";
         }
     }
 
@@ -756,20 +839,82 @@ public partial class MainWindowViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// Handles text dropped onto the window (a link dragged from a browser, for example).
+    /// </summary>
+    public void SearchDroppedText(string text)
+    {
+        var firstLine = text
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(firstLine))
+        {
+            return;
+        }
+
+        SelectedSection = "Downloader";
+        SearchQuery = firstLine;
+        SearchCommand.Execute(null);
+    }
+
     [RelayCommand]
+    private void CancelSearch()
+    {
+        if (!IsSearchRunning)
+        {
+            return;
+        }
+
+        CancelActiveSearch();
+        IsLoading = false;
+        StatusMessage = Videos.Count > 0
+            ? $"Stopped loading. {Videos.Count} result(s) kept."
+            : "Search canceled.";
+    }
+
+    private void CancelActiveSearch()
+    {
+        var cts = Interlocked.Exchange(ref _searchCts, null);
+        if (cts == null)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        IsSearchRunning = false;
+    }
+
+    // Concurrent executions are allowed so a new search (or a dropped link) can replace one
+    // that is still paging through a large channel instead of being ignored.
+    [RelayCommand(AllowConcurrentExecutions = true)]
     private async Task SearchAsync()
     {
-        if (string.IsNullOrWhiteSpace(SearchQuery)) return;
+        var query = SearchQuery.Trim();
+        if (string.IsNullOrWhiteSpace(query)) return;
+
+        CancelActiveSearch();
+        var searchCts = new CancellationTokenSource();
+        _searchCts = searchCts;
+        var token = searchCts.Token;
 
         HasSearched = true;
         IsLoading = true;
+        IsSearchRunning = true;
         SelectedVideo = null;
         IsVideoLoaded = false;
         IsPlaylistLoaded = false;
         Videos.Clear();
         FilteredVideos.Clear();
         PlaylistSearchQuery = string.Empty;
-        AvailableQualities.Clear();
+        IsAllSelected = false;
         ClearSelectedVideoDetails();
         CurrentResultKind = QueryResultKind.Video;
         CurrentCollectionTitle = string.Empty;
@@ -778,11 +923,16 @@ public partial class MainWindowViewModel : ViewModelBase
         try
         {
             var result = await _queryResolver.ResolveAsync(
-                SearchQuery,
+                query,
                 async item =>
                 {
                     await Dispatcher.UIThread.InvokeAsync(() =>
                     {
+                        if (token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
                         CurrentResultKind = item.Kind;
                         CurrentCollectionTitle = item.CollectionTitle;
                         IsPlaylistLoaded = item.Kind is QueryResultKind.Playlist or QueryResultKind.Channel or QueryResultKind.Search;
@@ -800,12 +950,21 @@ public partial class MainWindowViewModel : ViewModelBase
                 },
                 async message =>
                 {
-                    await Dispatcher.UIThread.InvokeAsync(() => StatusMessage = message);
-                });
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (!token.IsCancellationRequested)
+                        {
+                            StatusMessage = message;
+                        }
+                    });
+                },
+                token);
+
+            token.ThrowIfCancellationRequested();
 
             CurrentResultKind = result.Kind;
             CurrentCollectionTitle = result.Title;
-            
+
             if (Videos.Count == 0)
             {
                 var index = 0;
@@ -822,7 +981,7 @@ public partial class MainWindowViewModel : ViewModelBase
                 StatusMessage = string.IsNullOrWhiteSpace(result.WarningMessage)
                     ? $"{CurrentResultKindLabel} loaded: {result.Title} ({Videos.Count} videos)"
                     : result.WarningMessage;
-                if (FilteredVideos.Any()) SelectedVideo = FilteredVideos.First();
+                if (SelectedVideo == null && FilteredVideos.Any()) SelectedVideo = FilteredVideos.First();
             }
             else
             {
@@ -846,26 +1005,43 @@ public partial class MainWindowViewModel : ViewModelBase
                 StatusMessage = "No results found.";
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Replaced by a newer search or stopped by the user; they already updated the UI.
+        }
         catch (Exception ex)
         {
-            StatusMessage = "Error: " + ex.Message;
+            if (!token.IsCancellationRequested)
+            {
+                StatusMessage = "Error: " + GetFriendlyQueryError(ex);
+            }
         }
         finally
         {
-            IsLoading = false;
+            if (ReferenceEquals(_searchCts, searchCts))
+            {
+                _searchCts = null;
+                IsLoading = false;
+                IsSearchRunning = false;
+            }
+
+            searchCts.Dispose();
         }
     }
 
     private void AddResolvedVideo(IVideo video, QueryResultKind kind, string collectionTitle, int index)
     {
-        if (Videos.Any(v => v.Video.Id == video.Id))
+        if (!_resolvedVideoIds.Add(video.Id.Value))
         {
             return;
         }
 
         var vm = new SelectableVideoViewModel(video, kind, collectionTitle, index);
         Videos.Add(vm);
-        FilteredVideos.Add(vm);
+        if (MatchesFilter(vm, PlaylistSearchQuery))
+        {
+            FilteredVideos.Add(vm);
+        }
     }
 
     partial void OnSelectedVideoChanged(SelectableVideoViewModel? value)
@@ -880,14 +1056,10 @@ public partial class MainWindowViewModel : ViewModelBase
 
         VideoTitle = currentVideo.Title;
         VideoAuthor = currentVideo.Author.ChannelTitle;
-        VideoDuration = currentVideo.Duration?.ToString(@"hh\:mm\:ss") ?? "Unknown";
-        ThumbnailUrl = currentVideo.Thumbnails.Count > 0 ? currentVideo.Thumbnails.OrderByDescending(t => t.Resolution.Area).First().Url : string.Empty;
-        
+        VideoDuration = currentVideo.Duration?.ToString(@"hh\:mm\:ss") ?? "Live";
+        ThumbnailUrl = value.ThumbnailUrl;
+
         IsVideoLoaded = true;
-        AvailableQualities.Clear();
-        SelectedQuality = null;
-        IsLoadingQualities = false;
-        QualitiesPlaceholder = SelectedGlobalOutputType;
         StatusMessage = "Choose one download option. It applies to every selected item.";
         OnPropertyChanged(nameof(IsAudioMetadataEditorVisible));
     }
@@ -898,22 +1070,7 @@ public partial class MainWindowViewModel : ViewModelBase
         VideoAuthor = string.Empty;
         VideoDuration = string.Empty;
         ThumbnailUrl = string.Empty;
-        SelectedQuality = null;
         IsVideoLoaded = false;
-        IsLoadingQualities = false;
-        QualitiesPlaceholder = SelectedGlobalOutputType;
-    }
-
-    private SemaphoreSlim _downloadSemaphore = new SemaphoreSlim(3, 3);
-    private CancellationTokenSource? _queueSaveDebounce;
-    private bool _isLoadingPersistedQueue;
-    private const int MaxDownloadAttempts = 2;
-
-    partial void OnAppSettingsChanged(AppSettings value)
-    {
-        var concurrentDownloads = Math.Max(1, value.ConcurrentDownloads);
-        _downloadSemaphore = new SemaphoreSlim(concurrentDownloads, concurrentDownloads);
-        OnPropertyChanged(nameof(ThemeToggleLabel));
     }
 
     [RelayCommand]
@@ -926,26 +1083,103 @@ public partial class MainWindowViewModel : ViewModelBase
             else return;
         }
 
+        if (!EnsureDownloadFolderIsUsable(out var folderError))
+        {
+            StatusMessage = folderError;
+            return;
+        }
+
+        var added = 0;
+        var skipped = 0;
+        var failed = 0;
+
         foreach (var vid in toDownload)
         {
-            EnqueueDownload(vid, SelectedGlobalQuality);
+            if (IsAlreadyQueued(vid.Video.Url, SelectedGlobalQuality))
+            {
+                skipped++;
+                continue;
+            }
+
+            try
+            {
+                EnqueueDownload(vid, SelectedGlobalQuality);
+                added++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                AppLog.Error($"Enqueue '{vid.Title}'", ex);
+            }
+        }
+
+        var parts = new List<string>();
+        if (added > 0) parts.Add(added == 1 ? "Added 1 item to the queue" : $"Added {added} items to the queue");
+        if (skipped > 0) parts.Add($"{skipped} already queued");
+        if (failed > 0) parts.Add($"{failed} could not be added (see the log)");
+        StatusMessage = parts.Count > 0 ? string.Join(", ", parts) + "." : "Nothing to add.";
+    }
+
+    private bool IsAlreadyQueued(string videoUrl, string qualityPreference)
+    {
+        return DownloadQueue.Any(q =>
+            q.State is DownloadTaskState.Pending or DownloadTaskState.Running or DownloadTaskState.Paused
+            && string.Equals(q.VideoUrl, videoUrl, StringComparison.Ordinal)
+            && string.Equals(q.QualityLabel, qualityPreference, StringComparison.Ordinal));
+    }
+
+    private bool EnsureDownloadFolderIsUsable(out string error)
+    {
+        error = string.Empty;
+        var path = AppSettings.DownloadPath;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            error = "Choose a download folder in Settings first.";
+            return false;
+        }
+
+        if (!IsDirectoryWritable(path))
+        {
+            error = $"Can't write to the download folder '{path}'. Reconnect the drive or choose another folder in Settings.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsDirectoryWritable(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(path);
+            var probe = Path.Combine(path, $".write-test-{Guid.NewGuid():N}");
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose))
+            {
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
     private void EnqueueDownload(SelectableVideoViewModel item, string qualityPreference)
     {
         var video = item.Video;
-        var safeTitle = SanitizeFileName(video.Title);
-        var isAudioOnly = IsAudioOnlyPreference(qualityPreference);
+        var safeTitle = FileNameSanitizer.Sanitize(video.Title);
+        var isAudioOnly = VideoDownloaderService.IsAudioPreference(qualityPreference);
         var ext = isAudioOnly ? ".mp3" : ".mp4";
         var outputDirectory = AppSettings.DownloadPath;
 
         if (item.SourceKind is QueryResultKind.Playlist or QueryResultKind.Channel)
         {
-            var folderName = SanitizeFileName(string.IsNullOrWhiteSpace(item.CollectionTitle)
-                ? item.SourceKind.ToString()
-                : item.CollectionTitle);
-            outputDirectory = System.IO.Path.Combine(outputDirectory, folderName);
+            var folderName = FileNameSanitizer.Sanitize(
+                string.IsNullOrWhiteSpace(item.CollectionTitle) ? item.SourceKind.ToString() : item.CollectionTitle,
+                maxLength: 80);
+            outputDirectory = Path.Combine(outputDirectory, folderName);
         }
 
         var orderedTitle = item.CollectionIndex > 0
@@ -955,9 +1189,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
         var filePath = GetUniqueOutputPath(outputDirectory, $"{orderedTitle}{ext}");
 
-        var thumbnailUrl = video.Thumbnails.Count > 0
-            ? video.Thumbnails.OrderByDescending(t => t.Resolution.Area).First().Url
-            : string.Empty;
+        var thumbnailUrl = item.ThumbnailUrl;
 
         var metadata = item.Metadata.Clone();
         if (string.IsNullOrWhiteSpace(metadata.SourceUrl))
@@ -1007,35 +1239,31 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private async Task ProcessDownloadAsync(DownloadTaskViewModel taskVm)
     {
-        var semaphore = _downloadSemaphore;
-        var acquiredSemaphore = false;
+        IDisposable? slot = null;
+        var token = taskVm.CancellationTokenSource.Token;
 
         try
         {
-            Dispatcher.UIThread.Post(() =>
+            if (taskVm.State == DownloadTaskState.Pending)
             {
-                if (taskVm.State == DownloadTaskState.Pending)
-                {
-                    taskVm.Status = "Queued";
-                }
-            });
+                taskVm.Status = "Queued";
+            }
 
-            await semaphore.WaitAsync(taskVm.CancellationTokenSource.Token);
-            acquiredSemaphore = true;
+            slot = await _downloadSlots.AcquireAsync(token);
 
             if (taskVm.State is DownloadTaskState.Paused or DownloadTaskState.Canceled
-                || taskVm.CancellationTokenSource.IsCancellationRequested)
+                || token.IsCancellationRequested)
             {
                 return;
             }
 
-            Dispatcher.UIThread.Post(() => taskVm.MarkRunning());
+            taskVm.MarkRunning();
 
             for (var attempt = 1; attempt <= MaxDownloadAttempts; attempt++)
             {
                 try
                 {
-                    await RunDownloadAttemptAsync(taskVm, taskVm.VideoUrl, taskVm.QualityLabel, attempt);
+                    await RunDownloadAttemptAsync(taskVm, taskVm.VideoUrl, taskVm.QualityLabel, attempt, token);
                     return;
                 }
                 catch (OperationCanceledException) when (taskVm.IsPauseRequested || taskVm.IsCancelRequested)
@@ -1044,65 +1272,46 @@ public partial class MainWindowViewModel : ViewModelBase
                 }
                 catch (Exception ex) when (attempt < MaxDownloadAttempts && IsTransientDownloadException(ex))
                 {
-                    Dispatcher.UIThread.Post(() =>
-                    {
-                        taskVm.Progress = 0;
-                        taskVm.Status = "Network slowed down. Retrying...";
-                    });
+                    taskVm.Progress = 0;
+                    taskVm.Status = "Network slowed down. Retrying...";
 
-                    await Task.Delay(TimeSpan.FromSeconds(2), taskVm.CancellationTokenSource.Token);
+                    await Task.Delay(TimeSpan.FromSeconds(2), token);
                 }
             }
         }
         catch (OperationCanceledException) when (taskVm.IsPauseRequested)
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                taskVm.MarkPaused();
-                UpdateQueueHeader();
-            });
+            taskVm.MarkPaused();
         }
         catch (OperationCanceledException) when (taskVm.IsCancelRequested)
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                taskVm.MarkCanceled();
-                UpdateQueueHeader();
-            });
+            taskVm.MarkCanceled();
+            DeletePartialOutput(taskVm);
         }
         catch (Exception ex)
         {
-            Dispatcher.UIThread.Post(() =>
+            if (taskVm.IsPauseRequested)
             {
-                if (taskVm.IsPauseRequested)
-                {
-                    taskVm.MarkPaused();
-                }
-                else if (taskVm.IsCancelRequested)
-                {
-                    taskVm.MarkCanceled();
-                }
-                else
-                {
-                    taskVm.MarkFailed(GetFriendlyDownloadError(ex));
-                }
-
-                UpdateQueueHeader();
-            });
+                taskVm.MarkPaused();
+            }
+            else if (taskVm.IsCancelRequested)
+            {
+                taskVm.MarkCanceled();
+                DeletePartialOutput(taskVm);
+            }
+            else
+            {
+                AppLog.Error($"Download '{taskVm.Title}' ({taskVm.VideoUrl})", ex);
+                taskVm.MarkFailed(GetFriendlyDownloadError(ex));
+                DeletePartialOutput(taskVm);
+            }
         }
         finally
         {
-            if (acquiredSemaphore)
-            {
-                semaphore.Release();
-            }
-
+            slot?.Dispose();
             taskVm.EndProcessing();
-            Dispatcher.UIThread.Post(() =>
-            {
-                UpdateQueueHeader();
-                ScheduleSaveQueueState();
-            });
+            UpdateQueueHeader();
+            ScheduleSaveQueueState();
         }
     }
 
@@ -1110,140 +1319,99 @@ public partial class MainWindowViewModel : ViewModelBase
         DownloadTaskViewModel taskVm,
         string videoUrl,
         string qualityPreference,
-        int attempt)
+        int attempt,
+        CancellationToken cancellationToken)
     {
-        Dispatcher.UIThread.Post(() =>
+        if (attempt > 1)
         {
-            if (attempt > 1)
-            {
-                taskVm.MarkRunning($"Retrying download ({attempt}/{MaxDownloadAttempts})...");
-            }
-            else
-            {
-                taskVm.MarkRunning();
-            }
-        });
-
-        var qualities = await _videoDownloader.GetAvailableQualitiesAsync(videoUrl);
-        StreamQualityOption? targetQuality = qualities.FirstOrDefault(q => q.DisplayName == qualityPreference);
-        if (targetQuality == null)
-        {
-            if (IsHighestAudioPreference(qualityPreference)) targetQuality = qualities.FirstOrDefault(q => q.DisplayName.Contains("Audio Only"));
-            else if (qualityPreference == "Lowest Audio Only") targetQuality = qualities.LastOrDefault(q => q.DisplayName.Contains("Audio Only"));
-            else if (qualityPreference == "1080p Video (Requires FFmpeg)") targetQuality = qualities.FirstOrDefault(q => q.DisplayName.Contains("1080p")) ?? qualities.FirstOrDefault(q => !q.DisplayName.Contains("Audio"));
-            else if (qualityPreference == "720p Video (Requires FFmpeg)") targetQuality = qualities.FirstOrDefault(q => q.DisplayName.Contains("720p")) ?? qualities.FirstOrDefault(q => !q.DisplayName.Contains("Audio"));
-            else targetQuality = qualities.FirstOrDefault(q => !q.RequiresFfmpeg && !q.DisplayName.Contains("Audio Only"));
+            taskVm.MarkRunning($"Retrying download ({attempt}/{MaxDownloadAttempts})...");
         }
-        if (targetQuality == null) targetQuality = qualities.FirstOrDefault();
-        
-        if (targetQuality == null)
+        else
         {
-            throw new InvalidOperationException("Could not find a matching stream quality.");
+            taskVm.MarkRunning("Finding the best streams...");
         }
 
-        var totalBytes = (targetQuality.VideoStream?.Size.Bytes ?? 0) + (targetQuality.AudioStream?.Size.Bytes ?? 0);
-        DateTime lastTime = DateTime.UtcNow;
-        double lastProgress = 0;
+        var targetQuality = await _videoDownloader.ResolveStreamsAsync(videoUrl, qualityPreference, cancellationToken);
+        taskVm.FormatSummary = targetQuality.DisplayName;
 
-        taskVm.Status = "Downloading...";
-        var progress = new Progress<double>(p =>
+        // "Best" can resolve to a VP9-only WebM stream; keep the streams' native container so
+        // FFmpeg can copy them instead of spending minutes re-encoding to MP4.
+        if (!taskVm.IsAudio
+            && !string.Equals(Path.GetExtension(taskVm.FilePath), targetQuality.OutputExtension, StringComparison.OrdinalIgnoreCase))
         {
-            Dispatcher.UIThread.Post(() =>
+            var directory = Path.GetDirectoryName(taskVm.FilePath) ?? AppSettings.DownloadPath;
+            var fileName = Path.GetFileNameWithoutExtension(taskVm.FilePath) + targetQuality.OutputExtension;
+            taskVm.FilePath = GetUniqueOutputPath(directory, fileName, taskVm);
+        }
+
+        var warnings = new List<string>();
+        var wantsSubtitles = AppSettings.DownloadSubtitles && !taskVm.IsAudio;
+        var embedSubtitles = wantsSubtitles && AppSettings.EmbedSubtitles;
+        ClosedCaptionTrackInfo? subtitleTrack = null;
+
+        if (wantsSubtitles)
+        {
+            taskVm.Status = "Looking for subtitles...";
+            subtitleTrack = await _videoDownloader.FindSubtitleTrackAsync(videoUrl, AppSettings.SubtitleLanguage, cancellationToken);
+            if (subtitleTrack == null)
             {
-                taskVm.Progress = p * 100;
-                var now = DateTime.UtcNow;
-                var elapsed = (now - lastTime).TotalSeconds;
-                if (elapsed >= 0.5)
-                {
-                    var downloadedSinceLast = (p - lastProgress) * totalBytes;
-                    var speedBps = downloadedSinceLast / elapsed;
-                    var speedMbps = speedBps / 1024 / 1024;
-                    taskVm.Status = $"Downloading: {taskVm.Progress:F1}% ({speedMbps:F2} MB/s)";
-                    lastTime = now;
-                    lastProgress = p;
-                }
-            });
-        });
+                warnings.Add($"no '{AppSettings.SubtitleLanguage}' subtitles on YouTube");
+            }
+        }
 
-        var isAudioOnly = targetQuality.DisplayName.Contains("Audio Only");
-        var needsFfmpeg = targetQuality.RequiresFfmpeg || (isAudioOnly && taskVm.FilePath.EndsWith(".mp3")) || AppSettings.DownloadSubtitles;
-
-        if (needsFfmpeg)
+        if (targetQuality.RequiresFfmpeg || (embedSubtitles && subtitleTrack != null))
         {
-            Dispatcher.UIThread.Post(() => taskVm.Status = "Preparing FFmpeg...");
+            taskVm.Status = "Preparing FFmpeg...";
             await FfmpegBootstrapper.EnsureAvailableAsync(
                 message => Dispatcher.UIThread.Post(() => taskVm.Status = message),
-                taskVm.CancellationTokenSource.Token);
+                cancellationToken);
         }
 
-        await _videoDownloader.DownloadAsync(targetQuality, taskVm.FilePath, progress, taskVm.CancellationTokenSource.Token);
-        
-        if (AppSettings.DownloadSubtitles && !isAudioOnly)
+        var progress = CreateProgressReporter(taskVm, targetQuality.TotalBytes);
+        taskVm.Status = "Downloading...";
+
+        var embeddedTracks = embedSubtitles && subtitleTrack != null
+            ? new[] { subtitleTrack }
+            : null;
+
+        try
         {
-            Dispatcher.UIThread.Post(() => taskVm.Status = "Downloading Subtitles...");
-            var vttPath = System.IO.Path.ChangeExtension(taskVm.FilePath, ".vtt");
-            var downloadedSub = await _videoDownloader.DownloadSubtitlesAsync(videoUrl, vttPath, AppSettings.SubtitleLanguage);
+            await _videoDownloader.DownloadAsync(targetQuality, taskVm.FilePath, embeddedTracks, progress, cancellationToken);
+        }
+        catch (Exception ex) when (embeddedTracks != null
+                                   && ex is not OperationCanceledException
+                                   && !IsTransientDownloadException(ex))
+        {
+            // A subtitle track FFmpeg cannot mux should not cost the user the whole video.
+            AppLog.Error($"Embedding subtitles for '{taskVm.Title}'", ex);
+            warnings.Add("subtitles could not be embedded");
+            embeddedTracks = null;
+            subtitleTrack = null;
+            taskVm.Progress = 0;
+            taskVm.Status = "Retrying without embedded subtitles...";
+            await _videoDownloader.DownloadAsync(targetQuality, taskVm.FilePath, null, progress, cancellationToken);
+        }
 
-            if (downloadedSub == null)
+        if (subtitleTrack != null && embeddedTracks == null)
+        {
+            taskVm.Status = "Downloading subtitles...";
+            var srtPath = Path.ChangeExtension(taskVm.FilePath, ".srt");
+            var downloadedSubtitles = await _videoDownloader.DownloadSubtitlesAsync(subtitleTrack, srtPath, cancellationToken);
+            if (downloadedSubtitles == null)
             {
-                Dispatcher.UIThread.Post(() => taskVm.Status = "Warning: No subtitles found for this video on YouTube.");
-                await Task.Delay(2500);
-            }
-            else
-            {
-                if (System.IO.File.Exists(vttPath))
-                {
-                    var srtPath = System.IO.Path.ChangeExtension(taskVm.FilePath, ".srt");
-                    try
-                    {
-                        var srtConv = Xabe.FFmpeg.FFmpeg.Conversions.New().AddParameter($"-i \"{vttPath}\" \"{srtPath}\"");
-                        await srtConv.Start(taskVm.CancellationTokenSource.Token);
-                        System.IO.File.Delete(vttPath);
-                        downloadedSub = srtPath;
-                    }
-                    catch (Exception ex) 
-                    { 
-                        Dispatcher.UIThread.Post(() => taskVm.Status = "Subtitle error: " + ex.Message);
-                        await Task.Delay(2000);
-                    }
-                }
-
-                if (AppSettings.EmbedSubtitles && System.IO.File.Exists(taskVm.FilePath))
-                {
-                    Dispatcher.UIThread.Post(() => taskVm.Status = "Embedding Subtitles into Video...");
-                    try 
-                    {
-                        var tempPath = System.IO.Path.ChangeExtension(taskVm.FilePath, ".temp" + System.IO.Path.GetExtension(taskVm.FilePath));
-                        var conversion = Xabe.FFmpeg.FFmpeg.Conversions.New()
-                            .AddParameter($"-i \"{taskVm.FilePath}\" -i \"{downloadedSub}\" -map 0 -map 1 -c copy -c:s mov_text -disposition:s:0 default \"{tempPath}\"");
-                        
-                        await conversion.Start(taskVm.CancellationTokenSource.Token);
-                        
-                        if (System.IO.File.Exists(tempPath))
-                        {
-                            System.IO.File.Delete(taskVm.FilePath);
-                            System.IO.File.Move(tempPath, taskVm.FilePath);
-                            System.IO.File.Delete(downloadedSub);
-                        }
-                    }
-                    catch (Exception ex) 
-                    { 
-                        Dispatcher.UIThread.Post(() => taskVm.Status = "Embedding error: " + ex.Message);
-                        await Task.Delay(2000);
-                    }
-                }
+                warnings.Add("subtitles could not be saved");
             }
         }
 
         if (taskVm.IsAudio && AppSettings.AutoTagAudio)
         {
-            Dispatcher.UIThread.Post(() => taskVm.Status = "Writing Apple Music-ready metadata...");
+            taskVm.Status = "Writing Apple Music-ready metadata...";
             try
             {
                 if (string.IsNullOrWhiteSpace(taskVm.Metadata.Artist)
                     || string.IsNullOrWhiteSpace(taskVm.Metadata.ArtworkUrl))
                 {
-                    var videoInfo = await _videoDownloader.GetVideoDetailsAsync(videoUrl);
+                    var videoInfo = await _videoDownloader.GetVideoDetailsAsync(videoUrl, cancellationToken);
                     if (string.IsNullOrWhiteSpace(taskVm.Metadata.Artist))
                     {
                         taskVm.Metadata.Artist = videoInfo.Author.ChannelTitle;
@@ -1258,25 +1426,187 @@ public partial class MainWindowViewModel : ViewModelBase
                 await _audioMetadataService.ApplyYoutubeAudioMetadataAsync(
                     taskVm.FilePath,
                     taskVm.Metadata.ToModel(),
-                    taskVm.CancellationTokenSource.Token);
+                    cancellationToken);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Dispatcher.UIThread.Post(() => taskVm.Status = "Metadata warning: " + ex.Message);
-                await Task.Delay(2000);
+                AppLog.Error($"Tagging '{taskVm.FilePath}'", ex);
+                warnings.Add("metadata warning: " + ex.Message);
             }
         }
 
-        Dispatcher.UIThread.Post(() =>
+        taskVm.MarkCompleted(warnings.Count == 0
+            ? "Completed"
+            : "Completed · " + string.Join(" · ", warnings));
+        UpdateQueueHeader();
+    }
+
+    private static IProgress<double> CreateProgressReporter(DownloadTaskViewModel taskVm, long totalBytes)
+    {
+        var lastUiUpdate = DateTime.MinValue;
+        var lastSampleTime = DateTime.UtcNow;
+        double lastSampleProgress = 0;
+        double smoothedBytesPerSecond = 0;
+
+        // Progress<T> captures the UI thread's context, so the callback already runs there.
+        return new Progress<double>(p =>
         {
-            taskVm.MarkCompleted();
-            UpdateQueueHeader();
+            var now = DateTime.UtcNow;
+
+            var sampleSeconds = (now - lastSampleTime).TotalSeconds;
+            if (sampleSeconds >= 0.5 && totalBytes > 0)
+            {
+                var bytesPerSecond = Math.Max(0, (p - lastSampleProgress) * totalBytes / sampleSeconds);
+                smoothedBytesPerSecond = smoothedBytesPerSecond <= 0
+                    ? bytesPerSecond
+                    : smoothedBytesPerSecond * 0.7 + bytesPerSecond * 0.3;
+                lastSampleTime = now;
+                lastSampleProgress = p;
+            }
+
+            // YoutubeExplode reports every buffer read; refreshing the UI a few times per second
+            // is plenty and keeps large queues responsive.
+            if ((now - lastUiUpdate).TotalMilliseconds < 150 && p < 1)
+            {
+                return;
+            }
+
+            lastUiUpdate = now;
+            taskVm.Progress = Math.Clamp(p * 100, 0, 100);
+
+            if (p >= 0.92 && taskVm.IsAudio)
+            {
+                taskVm.Status = $"Converting to MP3... {taskVm.Progress:F0}%";
+                return;
+            }
+
+            var status = $"Downloading: {taskVm.Progress:F1}%";
+            if (smoothedBytesPerSecond > 0)
+            {
+                status += $" · {FormatBytes(smoothedBytesPerSecond)}/s";
+
+                var remainingSeconds = (1 - p) * totalBytes / smoothedBytesPerSecond;
+                if (remainingSeconds is > 1 and < 60 * 60 * 24)
+                {
+                    status += $" · {FormatDuration(TimeSpan.FromSeconds(remainingSeconds))} left";
+                }
+            }
+
+            if (totalBytes > 0)
+            {
+                status += $" · {FormatBytes(totalBytes)}";
+            }
+
+            taskVm.Status = status;
         });
+    }
+
+    private static string FormatBytes(double bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB" };
+        var unit = 0;
+        while (bytes >= 1024 && unit < units.Length - 1)
+        {
+            bytes /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{bytes:F0} {units[unit]}" : $"{bytes:F1} {units[unit]}";
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
+            : $"{duration.Minutes}:{duration.Seconds:00}";
+    }
+
+    private static void DeletePartialOutput(DownloadTaskViewModel taskVm)
+    {
+        if (taskVm.IsCompleted || string.IsNullOrWhiteSpace(taskVm.FilePath))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(taskVm.FilePath))
+            {
+                File.Delete(taskVm.FilePath);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"Could not delete partial download '{taskVm.FilePath}': {ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private void CancelQuit()
+    {
+        IsQuitConfirmationVisible = false;
+    }
+
+    [RelayCommand]
+    private void ConfirmQuit()
+    {
+        _isQuitConfirmed = true;
+        IsQuitConfirmationVisible = false;
+        RequestCloseAction?.Invoke();
+    }
+
+    /// <summary>
+    /// Called by the window before it closes. Returns false (and shows a confirmation) when
+    /// downloads are still running and the user has not confirmed quitting yet.
+    /// </summary>
+    public bool CanCloseNow(bool isOsShutdown)
+    {
+        if (_isQuitConfirmed || isOsShutdown || !HasActiveDownloads)
+        {
+            return true;
+        }
+
+        OnPropertyChanged(nameof(QuitConfirmationMessage));
+        IsQuitConfirmationVisible = true;
+        return false;
+    }
+
+    /// <summary>
+    /// Stops background work and flushes state synchronously; the process is about to exit, so
+    /// debounced background saves would otherwise be lost.
+    /// </summary>
+    public void PrepareForShutdown()
+    {
+        CancelActiveSearch();
+        _queueSaveDebounce?.Cancel();
+        _settingsSaveDebounce?.Cancel();
+
+        foreach (var item in DownloadQueue.Where(q => q.State is DownloadTaskState.Pending or DownloadTaskState.Running))
+        {
+            // Pausing (rather than canceling) keeps the item resumable after restart and kills
+            // any FFmpeg child process synchronously.
+            item.RequestPause();
+        }
+
+        try
+        {
+            SaveQueueSnapshot(CreateQueueSnapshot());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Saving queue on exit", ex);
+        }
+
+        SettingsManager.SaveSettings(AppSettings);
     }
 
     private void LoadPersistedQueue()
     {
-        if (!File.Exists(AppPaths.QueueStateFile))
+        var queueFile = File.Exists(AppPaths.QueueStateFile)
+            ? AppPaths.QueueStateFile
+            : AppPaths.LegacyQueueStateFile;
+
+        if (!File.Exists(queueFile))
         {
             return;
         }
@@ -1284,7 +1614,7 @@ public partial class MainWindowViewModel : ViewModelBase
         try
         {
             _isLoadingPersistedQueue = true;
-            var json = File.ReadAllText(AppPaths.QueueStateFile);
+            var json = File.ReadAllText(queueFile);
             var snapshot = JsonSerializer.Deserialize<DownloadQueueSnapshot>(json);
             if (snapshot?.Items == null)
             {
@@ -1316,7 +1646,10 @@ public partial class MainWindowViewModel : ViewModelBase
                     item.Id,
                     restoredState,
                     restoredState == DownloadTaskState.Paused ? 0 : item.Progress,
-                    restoredStatus);
+                    restoredStatus)
+                {
+                    FormatSummary = item.FormatSummary ?? string.Empty
+                };
 
                 DownloadQueue.Add(taskVm);
             }
@@ -1326,8 +1659,9 @@ public partial class MainWindowViewModel : ViewModelBase
                 StatusMessage = $"Restored {DownloadQueue.Count} queue item(s). Paused items will not restart until resumed.";
             }
         }
-        catch
+        catch (Exception ex)
         {
+            AppLog.Error("Restoring the download queue", ex);
             StatusMessage = "Could not restore the saved download queue.";
         }
         finally
@@ -1345,31 +1679,27 @@ public partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        try
-        {
-            _queueSaveDebounce?.Cancel();
-            var cts = new CancellationTokenSource();
-            _queueSaveDebounce = cts;
+        _queueSaveDebounce?.Cancel();
+        var cts = new CancellationTokenSource();
+        _queueSaveDebounce = cts;
 
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(500, cts.Token);
-                    var snapshot = await Dispatcher.UIThread.InvokeAsync(CreateQueueSnapshot);
-                    await SaveQueueSnapshotAsync(snapshot, cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                }
-                catch
-                {
-                }
-            });
-        }
-        catch
+        _ = Task.Run(async () =>
         {
-        }
+            try
+            {
+                await Task.Delay(500, cts.Token);
+                var snapshot = await Dispatcher.UIThread.InvokeAsync(CreateQueueSnapshot);
+                cts.Token.ThrowIfCancellationRequested();
+                SaveQueueSnapshot(snapshot);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Saving the download queue", ex);
+            }
+        });
     }
 
     private DownloadQueueSnapshot CreateQueueSnapshot()
@@ -1391,24 +1721,24 @@ public partial class MainWindowViewModel : ViewModelBase
                 SourceKind = item.SourceKind,
                 CollectionTitle = item.CollectionTitle,
                 CollectionIndex = item.CollectionIndex,
+                FormatSummary = item.FormatSummary,
                 Metadata = item.Metadata.ToModel()
             }).ToList()
         };
     }
 
-    private static async Task SaveQueueSnapshotAsync(DownloadQueueSnapshot snapshot, CancellationToken cancellationToken)
-    {
-        var directory = Path.GetDirectoryName(AppPaths.QueueStateFile);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
+    private static readonly object QueueFileLock = new();
 
-        var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync(AppPaths.QueueStateFile, json, cancellationToken);
+    private static void SaveQueueSnapshot(DownloadQueueSnapshot snapshot)
+    {
+        var json = JsonSerializer.Serialize(snapshot, QueueJsonOptions);
+        lock (QueueFileLock)
+        {
+            AppPaths.WriteAllTextAtomic(AppPaths.QueueStateFile, json);
+        }
     }
 
-    private string GetUniqueOutputPath(string outputDirectory, string fileName)
+    private string GetUniqueOutputPath(string outputDirectory, string fileName, DownloadTaskViewModel? owner = null)
     {
         Directory.CreateDirectory(outputDirectory);
 
@@ -1417,7 +1747,9 @@ public partial class MainWindowViewModel : ViewModelBase
         var candidate = Path.Combine(outputDirectory, fileName);
         var index = 2;
 
-        while (File.Exists(candidate) || DownloadQueue.Any(q => string.Equals(q.FilePath, candidate, StringComparison.OrdinalIgnoreCase)))
+        while (File.Exists(candidate)
+               || DownloadQueue.Any(q => !ReferenceEquals(q, owner)
+                                         && string.Equals(q.FilePath, candidate, StringComparison.OrdinalIgnoreCase)))
         {
             candidate = Path.Combine(outputDirectory, $"{baseName} ({index}){extension}");
             index++;
@@ -1426,23 +1758,35 @@ public partial class MainWindowViewModel : ViewModelBase
         return candidate;
     }
 
-    private static string SanitizeFileName(string value)
-    {
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var cleaned = string.Join("_", value.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        return string.IsNullOrWhiteSpace(cleaned) ? "Untitled" : cleaned.Trim();
-    }
-
     private static bool IsTransientDownloadException(Exception ex)
     {
         return ex is HttpRequestException
+               || ex is HttpIOException
+               || ex is SocketException
                || ex is TimeoutException
                || ex is TaskCanceledException
+               || ex is RequestLimitExceededException
                || (ex.InnerException != null && IsTransientDownloadException(ex.InnerException));
     }
 
     private static string GetFriendlyDownloadError(Exception ex)
     {
+        switch (ex)
+        {
+            case VideoRequiresPurchaseException:
+                return "This video requires a purchase or rental on YouTube.";
+            case VideoUnavailableException:
+                return "This video is unavailable (removed, private or blocked in your region).";
+            case VideoUnplayableException:
+                return "YouTube won't let this video be downloaded (age-restricted, members-only or live).";
+            case RequestLimitExceededException:
+                return "YouTube is rate limiting requests. Wait a few minutes, then use Retry Failed.";
+            case UnauthorizedAccessException:
+                return "Permission denied writing to the download folder. Choose another folder in Settings.";
+            case IOException io when io.Message.Contains("space", StringComparison.OrdinalIgnoreCase):
+                return "The disk is full. Free some space, then use Retry Failed.";
+        }
+
         if (IsTransientDownloadException(ex)
             || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
@@ -1453,15 +1797,13 @@ public partial class MainWindowViewModel : ViewModelBase
         return "Error: " + ex.Message;
     }
 
-    private static bool IsAudioOnlyPreference(string qualityPreference)
+    private static string GetFriendlyQueryError(Exception ex)
     {
-        return qualityPreference.Contains("Audio", StringComparison.OrdinalIgnoreCase)
-               || qualityPreference.Contains("MP3", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsHighestAudioPreference(string qualityPreference)
-    {
-        return qualityPreference.Equals("Highest Quality MP3", StringComparison.OrdinalIgnoreCase)
-               || qualityPreference.Equals("Highest Audio Only", StringComparison.OrdinalIgnoreCase);
+        return ex switch
+        {
+            VideoUnavailableException => "That video is unavailable (removed, private or blocked in your region).",
+            HttpRequestException or HttpIOException or SocketException => "Could not reach YouTube. Check your internet connection.",
+            _ => ex.Message
+        };
     }
 }

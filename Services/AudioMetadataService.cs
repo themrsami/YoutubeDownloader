@@ -15,7 +15,8 @@ public sealed class AudioMetadataService
     private const int MaxCoverSize = 1400;
     private const int JpegQuality = 90;
 
-    private static readonly HttpClient HttpClient = new();
+    private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private static readonly object TagLibDefaultsLock = new();
 
     public async Task ApplyYoutubeAudioMetadataAsync(
         string mp3Path,
@@ -37,60 +38,70 @@ public sealed class AudioMetadataService
 
         await Task.Run(() =>
         {
-            var previousVersion = TagLib.Id3v2.Tag.DefaultVersion;
-            var previousForceVersion = TagLib.Id3v2.Tag.ForceDefaultVersion;
-            var previousEncoding = TagLib.Id3v2.Tag.DefaultEncoding;
-            var previousForceEncoding = TagLib.Id3v2.Tag.ForceDefaultEncoding;
-
-            try
+            // TagLib's ID3 defaults are process-wide statics; concurrent downloads must not
+            // interleave their save-and-restore of them.
+            lock (TagLibDefaultsLock)
             {
-                TagLib.Id3v2.Tag.DefaultVersion = 3;
-                TagLib.Id3v2.Tag.ForceDefaultVersion = true;
-                TagLib.Id3v2.Tag.DefaultEncoding = TagLib.StringType.UTF16;
-                TagLib.Id3v2.Tag.ForceDefaultEncoding = true;
-
-                using var file = TagLib.File.Create(mp3Path);
-                file.RemoveTags(TagLib.TagTypes.AllTags);
-
-                var tag = file.GetTag(TagLib.TagTypes.Id3v2, true);
-                var performers = SplitTagList(metadata.Artist);
-                tag.Title = CleanRequiredTagValue(metadata.Title);
-                tag.Performers = performers.Length > 0
-                    ? performers
-                    : new[] { "Unknown" };
-                tag.Album = CleanOptionalTagValue(metadata.Album);
-                tag.AlbumArtists = SplitTagList(metadata.AlbumArtist).DefaultIfEmpty(tag.Performers[0]).ToArray();
-                tag.Genres = SplitTagList(metadata.Genre);
-                tag.Year = ParsePositiveUInt(metadata.Year);
-                tag.Track = ParsePositiveUInt(metadata.TrackNumber);
-                tag.Disc = ParsePositiveUInt(metadata.DiscNumber);
-                tag.Comment = BuildComment(metadata);
-
-                if (coverArtBytes is { Length: > 0 })
-                {
-                    tag.Pictures = new TagLib.IPicture[]
-                    {
-                        new TagLib.Picture(new TagLib.ByteVector(coverArtBytes))
-                        {
-                            Type = TagLib.PictureType.FrontCover,
-                            MimeType = "image/jpeg",
-                            Description = "Cover"
-                        }
-                    };
-                }
-
-                file.Save();
+                WriteTags(mp3Path, metadata, coverArtBytes);
             }
-            finally
-            {
-                TagLib.Id3v2.Tag.DefaultVersion = previousVersion;
-                TagLib.Id3v2.Tag.ForceDefaultVersion = previousForceVersion;
-                TagLib.Id3v2.Tag.DefaultEncoding = previousEncoding;
-                TagLib.Id3v2.Tag.ForceDefaultEncoding = previousForceEncoding;
-            }
+
+            VerifySavedMetadata(mp3Path, coverArtBytes != null);
         }, cancellationToken);
+    }
 
-        VerifySavedMetadata(mp3Path, coverArtBytes != null);
+    private static void WriteTags(string mp3Path, AudioMetadata metadata, byte[]? coverArtBytes)
+    {
+        var previousVersion = TagLib.Id3v2.Tag.DefaultVersion;
+        var previousForceVersion = TagLib.Id3v2.Tag.ForceDefaultVersion;
+        var previousEncoding = TagLib.Id3v2.Tag.DefaultEncoding;
+        var previousForceEncoding = TagLib.Id3v2.Tag.ForceDefaultEncoding;
+
+        try
+        {
+            TagLib.Id3v2.Tag.DefaultVersion = 3;
+            TagLib.Id3v2.Tag.ForceDefaultVersion = true;
+            TagLib.Id3v2.Tag.DefaultEncoding = TagLib.StringType.UTF16;
+            TagLib.Id3v2.Tag.ForceDefaultEncoding = true;
+
+            using var file = TagLib.File.Create(mp3Path);
+            file.RemoveTags(TagLib.TagTypes.AllTags);
+
+            var tag = file.GetTag(TagLib.TagTypes.Id3v2, true);
+            var performers = SplitTagList(metadata.Artist);
+            tag.Title = CleanRequiredTagValue(metadata.Title);
+            tag.Performers = performers.Length > 0
+                ? performers
+                : new[] { "Unknown" };
+            tag.Album = CleanOptionalTagValue(metadata.Album);
+            tag.AlbumArtists = SplitTagList(metadata.AlbumArtist).DefaultIfEmpty(tag.Performers[0]).ToArray();
+            tag.Genres = SplitTagList(metadata.Genre);
+            tag.Year = ParsePositiveUInt(metadata.Year);
+            tag.Track = ParsePositiveUInt(metadata.TrackNumber);
+            tag.Disc = ParsePositiveUInt(metadata.DiscNumber);
+            tag.Comment = BuildComment(metadata);
+
+            if (coverArtBytes is { Length: > 0 })
+            {
+                tag.Pictures = new TagLib.IPicture[]
+                {
+                    new TagLib.Picture(new TagLib.ByteVector(coverArtBytes))
+                    {
+                        Type = TagLib.PictureType.FrontCover,
+                        MimeType = "image/jpeg",
+                        Description = "Cover"
+                    }
+                };
+            }
+
+            file.Save();
+        }
+        finally
+        {
+            TagLib.Id3v2.Tag.DefaultVersion = previousVersion;
+            TagLib.Id3v2.Tag.ForceDefaultVersion = previousForceVersion;
+            TagLib.Id3v2.Tag.DefaultEncoding = previousEncoding;
+            TagLib.Id3v2.Tag.ForceDefaultEncoding = previousForceEncoding;
+        }
     }
 
     public Task ApplyYoutubeAudioMetadataAsync(
@@ -226,7 +237,16 @@ public sealed class AudioMetadataService
 
     private static uint ParsePositiveUInt(string value)
     {
-        return uint.TryParse(value?.Trim(), out var parsed) ? parsed : 0;
+        var trimmed = value?.Trim() ?? string.Empty;
+
+        // Accept "2024-05-01" for years and "3/12" for track or disc numbers.
+        var separatorIndex = trimmed.IndexOfAny(new[] { '-', '/' });
+        if (separatorIndex > 0)
+        {
+            trimmed = trimmed[..separatorIndex];
+        }
+
+        return uint.TryParse(trimmed, out var parsed) ? parsed : 0;
     }
 
     private static string? BuildComment(AudioMetadata metadata)

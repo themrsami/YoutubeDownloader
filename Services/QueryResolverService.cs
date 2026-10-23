@@ -26,7 +26,9 @@ public class QueryResolverService
         Func<string, Task>? onStatusChanged = null,
         CancellationToken cancellationToken = default)
     {
-        bool isUrl = Uri.TryCreate(query, UriKind.Absolute, out var uriResult) 
+        query = NormalizeQuery(query);
+
+        bool isUrl = Uri.TryCreate(query, UriKind.Absolute, out var uriResult)
                      && (uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps);
 
         if (isUrl)
@@ -55,7 +57,7 @@ public class QueryResolverService
                         Kind = QueryResultKind.Playlist
                     };
                 }
-                catch (Exception ex) when (videoId != null)
+                catch (Exception ex) when (videoId != null && ex is not OperationCanceledException)
                 {
                     var video = await _youtube.Videos.GetAsync(videoId.Value, cancellationToken);
                     return new QueryResult
@@ -66,7 +68,7 @@ public class QueryResolverService
                         WarningMessage = GetPlaylistFallbackMessage(playlistId.Value.Value, ex)
                     };
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new InvalidOperationException(GetPlaylistUnavailableMessage(playlistId.Value.Value, ex), ex);
                 }
@@ -106,7 +108,8 @@ public class QueryResolverService
 
         if (query.TrimStart().StartsWith("@", StringComparison.Ordinal))
         {
-            var handle = ChannelHandle.TryParse(query.Trim());
+            // ChannelHandle.TryParse accepts "name" or a full URL, but not "@name".
+            var handle = ChannelHandle.TryParse(query.Trim().TrimStart('@'));
             if (handle != null)
             {
                 var channel = await _youtube.Channels.GetByHandleAsync(handle.Value, cancellationToken);
@@ -171,7 +174,9 @@ public class QueryResolverService
         {
             if (first.StartsWith("@", StringComparison.Ordinal))
             {
-                var handle = ChannelHandle.TryParse(first);
+                // ChannelHandle.TryParse rejects the leading "@", which made every
+                // youtube.com/@name link fall through to a plain text search.
+                var handle = ChannelHandle.TryParse(first.TrimStart('@'));
                 return handle == null
                     ? null
                     : await _youtube.Channels.GetByHandleAsync(handle.Value, cancellationToken);
@@ -201,19 +206,42 @@ public class QueryResolverService
                     : await _youtube.Channels.GetByUserAsync(userName.Value, cancellationToken);
             }
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return null;
+            // The link is clearly a channel; searching YouTube for the URL text instead would
+            // only show unrelated videos.
+            throw new InvalidOperationException($"Channel could not be loaded: {GetShortError(ex)}", ex);
         }
 
         return null;
+    }
+
+    private static string NormalizeQuery(string query)
+    {
+        var trimmed = query.Trim();
+
+        // Links copied from some apps omit the scheme ("youtube.com/watch?v=..."); without it they
+        // would be sent to YouTube search instead of being opened directly.
+        if (!trimmed.Contains("://", StringComparison.Ordinal)
+            && !trimmed.Contains(' ')
+            && (trimmed.StartsWith("youtu.be/", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("youtube.com/", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("www.youtube.com/", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("m.youtube.com/", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("music.youtube.com/", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "https://" + trimmed;
+        }
+
+        return trimmed;
     }
 
     private static bool IsYoutubeHost(string host)
     {
         return host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase)
                || host.Equals("www.youtube.com", StringComparison.OrdinalIgnoreCase)
-               || host.Equals("m.youtube.com", StringComparison.OrdinalIgnoreCase);
+               || host.Equals("m.youtube.com", StringComparison.OrdinalIgnoreCase)
+               || host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<List<IVideo>> CollectVideosAsync(

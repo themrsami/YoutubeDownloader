@@ -23,5 +23,6 @@ public sealed class DownloadQueueItemSnapshot
     public QueryResultKind SourceKind { get; set; } = QueryResultKind.Video;
     public string CollectionTitle { get; set; } = string.Empty;
     public int CollectionIndex { get; set; }
+    public string FormatSummary { get; set; } = string.Empty;
     public AudioMetadata Metadata { get; set; } = new();
 }

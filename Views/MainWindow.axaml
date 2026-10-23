@@ -34,10 +34,11 @@
                     Padding="86,7,14,7">
                 <Grid ColumnDefinitions="*,Auto"
                       ColumnSpacing="8">
-                    <TextBox Grid.Column="0"
+                    <TextBox x:Name="SearchBox"
+                             Grid.Column="0"
                              Classes="search-field"
                              Text="{Binding SearchQuery}"
-                             PlaceholderText="Paste video, playlist, or channel URL">
+                             PlaceholderText="Paste or drop a video, playlist, or channel URL, or search YouTube">
                         <TextBox.KeyBindings>
                             <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
                         </TextBox.KeyBindings>
@@ -159,6 +160,16 @@
                                         Spacing="7"
                                         VerticalAlignment="Center">
                                 <Button Classes="compact"
+                                        Command="{Binding CancelSearchCommand}"
+                                        IsVisible="{Binding IsBackgroundSearchRunning}"
+                                        ToolTip.Tip="Stop loading more results and keep the ones already found">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <materialIcons:MaterialIcon Kind="StopCircleOutline" Width="15" Height="15" />
+                                        <TextBlock Text="Stop" />
+                                    </StackPanel>
+                                </Button>
+
+                                <Button Classes="compact"
                                         Command="{Binding ResetDownloaderStateCommand}"
                                         IsVisible="{Binding HasDownloaderActivity}">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
@@ -199,6 +210,7 @@
                                     </Border>
                                     <TextBlock Text="Ready to download"
                                                FontSize="18"
+                                               LineHeight="24"
                                                FontWeight="SemiBold"
                                                HorizontalAlignment="Center" />
                                     <TextBlock Text="Paste a link or search above."
@@ -381,6 +393,7 @@
                                                         MinWidth="0">
                                                 <TextBlock Text="{Binding VideoTitle}"
                                                            FontSize="19"
+                                                           LineHeight="25"
                                                            FontWeight="SemiBold"
                                                            TextWrapping="Wrap"
                                                            MaxLines="3"
@@ -562,10 +575,6 @@
                                                 </StackPanel>
                                             </Border>
 
-                                            <ProgressBar Grid.Row="5"
-                                                         IsIndeterminate="True"
-                                                         IsVisible="{Binding IsLoadingQualities}"
-                                                         VerticalAlignment="Top" />
                                         </Grid>
 
                                             <Grid IsVisible="{Binding IsVideoEmpty}">
@@ -580,6 +589,7 @@
                                                                                 HorizontalAlignment="Center" />
                                                     <TextBlock Text="Choose a result"
                                                                FontSize="17"
+                                                               LineHeight="23"
                                                                FontWeight="SemiBold"
                                                                HorizontalAlignment="Center" />
                                                     <TextBlock Text="The selected video preview and format choice appear here."
@@ -613,7 +623,7 @@
                                                 MinWidth="136">
                                             <StackPanel Orientation="Horizontal" Spacing="7">
                                                 <materialIcons:MaterialIcon Kind="TrayArrowDown" Width="16" Height="16" />
-                                                <TextBlock Text="Add to Queue"
+                                                <TextBlock Text="{Binding AddToQueueLabel}"
                                                            Foreground="White"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
@@ -740,6 +750,7 @@
                                                             HorizontalAlignment="Center" />
                                 <TextBlock Text="Queue is empty"
                                            FontSize="17"
+                                           LineHeight="23"
                                            FontWeight="SemiBold"
                                            HorizontalAlignment="Center" />
                                 <TextBlock Text="Downloads you add will appear here with progress."
@@ -795,7 +806,13 @@
                                                               Margin="0,4,0,0">
                                                             <TextBlock Text="{Binding QualityLabel}"
                                                                        Classes="caption"
-                                                                       MaxWidth="220" />
+                                                                       MaxWidth="220"
+                                                                       IsVisible="{Binding !HasFormatSummary}" />
+                                                            <TextBlock Text="{Binding FormatSummary}"
+                                                                       Classes="caption"
+                                                                       MaxWidth="220"
+                                                                       IsVisible="{Binding HasFormatSummary}"
+                                                                       ToolTip.Tip="{Binding QualityLabel}" />
                                                             <TextBlock Grid.Column="1"
                                                                        Text="."
                                                                        Classes="caption"
@@ -1059,6 +1076,16 @@
                                                         </Button>
 
                                                         <Button Classes="toolbar"
+                                                                Command="{Binding OpenFileCommand}"
+                                                                IsVisible="{Binding CanOpenFile}"
+                                                                Margin="0,0,7,7">
+                                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                                <materialIcons:MaterialIcon Kind="PlayCircleOutline" Width="14" Height="14" />
+                                                                <TextBlock Text="Open" />
+                                                            </StackPanel>
+                                                        </Button>
+
+                                                        <Button Classes="toolbar"
                                                                 Command="{Binding OpenFolderCommand}"
                                                                 IsVisible="{Binding CanReveal}"
                                                                 Margin="0,0,7,7">
@@ -1142,6 +1169,27 @@
                                                     <TextBlock Text="Choose" />
                                                 </StackPanel>
                                             </Button>
+                                        </Grid>
+                                    </Border>
+                                    <Border Classes="settings-list">
+                                        <Grid ColumnDefinitions="*,Auto"
+                                              ColumnSpacing="20"
+                                              MinHeight="64"
+                                              Margin="16,0">
+                                            <StackPanel Spacing="4"
+                                                        VerticalAlignment="Center"
+                                                        MinWidth="0">
+                                                <TextBlock Text="Simultaneous downloads"
+                                                           FontWeight="SemiBold"
+                                                           FontSize="13" />
+                                                <TextBlock Text="Lower this on slow connections. Applies immediately."
+                                                           Classes="caption" />
+                                            </StackPanel>
+                                            <ComboBox Grid.Column="1"
+                                                      ItemsSource="{Binding ConcurrentDownloadOptions}"
+                                                      SelectedItem="{Binding AppSettings.ConcurrentDownloads}"
+                                                      MinWidth="80"
+                                                      VerticalAlignment="Center" />
                                         </Grid>
                                     </Border>
                                 </StackPanel>
@@ -1230,8 +1278,9 @@
                                                     <TextBlock Text="Subtitle language"
                                                                FontWeight="SemiBold"
                                                                FontSize="13" />
-                                                    <TextBlock Text="Use ISO code, or auto."
-                                                               Classes="caption" />
+                                                    <TextBlock Text="Language code such as en, es or de, or auto for the video's own captions."
+                                                               Classes="caption"
+                                                               TextWrapping="Wrap" />
                                                 </StackPanel>
                                                 <TextBox Grid.Column="1"
                                                          Text="{Binding AppSettings.SubtitleLanguage}"
@@ -1262,10 +1311,53 @@
                     <ProgressBar IsIndeterminate="True" />
                     <TextBlock Text="{Binding StatusMessage}"
                                FontSize="16"
+                               LineHeight="22"
                                FontWeight="SemiBold"
                                TextAlignment="Center"
                                TextWrapping="Wrap"
                                MaxWidth="460" />
+                    <Button Classes="compact"
+                            HorizontalAlignment="Center"
+                            Command="{Binding CancelSearchCommand}">
+                        <TextBlock Text="Cancel" />
+                    </Button>
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <Border Background="#99000000"
+                IsVisible="{Binding IsQuitConfirmationVisible}"
+                ZIndex="150">
+            <Border Classes="modal-panel"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="440">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="Quit while downloading?"
+                               FontSize="16"
+                               LineHeight="22"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding QuitConfirmationMessage}"
+                               Classes="muted"
+                               TextWrapping="Wrap"
+                               TextTrimming="None" />
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                Spacing="8">
+                        <Button Classes="compact"
+                                Command="{Binding CancelQuitCommand}"
+                                IsDefault="False"
+                                IsCancel="True">
+                            <TextBlock Text="Keep Downloading" />
+                        </Button>
+                        <Button Classes="primary compact"
+                                Command="{Binding ConfirmQuitCommand}">
+                            <TextBlock Text="Pause and Quit"
+                                       Foreground="White"
+                                       FontWeight="SemiBold" />
+                        </Button>
+                    </StackPanel>
                 </StackPanel>
             </Border>
         </Border>
@@ -1282,6 +1374,7 @@
                     <ProgressBar IsIndeterminate="True" />
                     <TextBlock Text="{Binding InitializationMessage}"
                                FontSize="16"
+                               LineHeight="22"
                                FontWeight="SemiBold"
                                TextAlignment="Center"
                                TextWrapping="Wrap"

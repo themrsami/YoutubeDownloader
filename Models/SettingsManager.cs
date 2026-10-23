@@ -1,72 +1,97 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
+using CommunityToolkit.Mvvm.ComponentModel;
 using PremiumYoutubeDownloader.Services;
 
 namespace PremiumYoutubeDownloader.Models;
 
-public class AppSettings
+public partial class AppSettings : ObservableObject
 {
-    public string DownloadPath { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-    public int ConcurrentDownloads { get; set; } = SettingsManager.DefaultConcurrentDownloads;
-    public string ThemeMode { get; set; } = "Dark"; // "Dark" or "Light"
-    public bool AutoTagAudio { get; set; } = true;
-    public bool DownloadSubtitles { get; set; } = true;
-    public bool EmbedSubtitles { get; set; } = false;
-    public string SubtitleLanguage { get; set; } = "en";
+    [ObservableProperty]
+    private string _downloadPath = AppPaths.DefaultDownloadDirectory;
+
+    [ObservableProperty]
+    private int _concurrentDownloads = SettingsManager.DefaultConcurrentDownloads;
+
+    [ObservableProperty]
+    private string _themeMode = "Light";
+
+    [ObservableProperty]
+    private bool _autoTagAudio = true;
+
+    [ObservableProperty]
+    private bool _downloadSubtitles = true;
+
+    [ObservableProperty]
+    private bool _embedSubtitles;
+
+    [ObservableProperty]
+    private string _subtitleLanguage = "en";
 }
 
 public static class SettingsManager
 {
     public const int DefaultConcurrentDownloads = 3;
+    public const int MinConcurrentDownloads = 1;
+    public const int MaxConcurrentDownloads = 6;
 
-    private static readonly string SettingsFile = AppPaths.SettingsFile;
-    private static readonly string LegacySettingsFile = Path.Combine(AppContext.BaseDirectory, "settings.json");
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static AppSettings LoadSettings()
     {
-        var path = File.Exists(SettingsFile) ? SettingsFile : LegacySettingsFile;
-
-        if (File.Exists(path))
+        foreach (var path in new[] { AppPaths.SettingsFile, AppPaths.LegacySettingsFile })
         {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
             try
             {
                 var json = File.ReadAllText(path);
                 return NormalizeSettings(JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings());
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not read settings from '{path}': {ex.Message}");
+            }
         }
 
         return NormalizeSettings(new AppSettings());
     }
 
-    public static void SaveSettings(AppSettings settings)
+    public static bool SaveSettings(AppSettings settings)
     {
         try
         {
-            var directory = Path.GetDirectoryName(SettingsFile);
-            if (!string.IsNullOrWhiteSpace(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(SettingsFile, json);
+            AppPaths.WriteAllTextAtomic(AppPaths.SettingsFile, JsonSerializer.Serialize(settings, JsonOptions));
+            return true;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Could not save settings: {ex.Message}");
+            return false;
+        }
     }
 
     private static AppSettings NormalizeSettings(AppSettings settings)
     {
-        if (settings.ConcurrentDownloads < DefaultConcurrentDownloads)
-        {
-            settings.ConcurrentDownloads = DefaultConcurrentDownloads;
-        }
+        settings.ConcurrentDownloads = Math.Clamp(settings.ConcurrentDownloads, MinConcurrentDownloads, MaxConcurrentDownloads);
 
         if (string.IsNullOrWhiteSpace(settings.DownloadPath))
         {
-            settings.DownloadPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            settings.DownloadPath = AppPaths.DefaultDownloadDirectory;
         }
+
+        if (string.IsNullOrWhiteSpace(settings.SubtitleLanguage))
+        {
+            settings.SubtitleLanguage = "en";
+        }
+
+        // Only the light appearance is styled today.
+        settings.ThemeMode = "Light";
 
         return settings;
     }
